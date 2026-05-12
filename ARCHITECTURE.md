@@ -108,13 +108,22 @@ Five required fields enter (`mesh_version`, `from`, `to`, `subject`, `body`); th
 
 `body` is freeform JSON — the schema deliberately doesn't constrain it. Senders agree on a body shape per-conversation. The dispatcher never inspects body content.
 
+## Read endpoints
+
+Beyond `GET /mesh/state/<id>` and `GET /mesh/history`, the dispatcher offers two convenience queries an agent typically wants when waking up:
+
+- `GET /mesh/inbox/<agent>?limit=N&unread_only=true|false` — messages addressed to an agent. "Unread" is computed: a message is unread if no row exists where `reply_to == this.id AND from_agent == this.to_agent`. (i.e., the recipient has not yet replied.) No "mark read" mutation — just a derived filter.
+- `GET /mesh/thread/<id>` — walks `reply_to` back to the root, then a recursive CTE collects every descendant. Returns `{root_id, messages: [...]}` in chronological order. Useful for catching up on context before responding to anything.
+
+These are intentionally read-only and stateless. The SQLite indexes on `reply_to` and `(to_agent, state)` keep both queries cheap.
+
 ## Where to extend
 
 Most useful extension points are also the cleanest seams:
 
 - **`discord_mirror.py`** — swap for Slack, webhook fan-out, structured log, whatever. The dispatcher only knows it called `.mirror(envelope)`.
 - **`DISCOBUS_AUTO_REPLY`** — drop in any agent runtime that can read JSON on stdin and emit JSON on stdout.
-- **MCP `ping_read`** — the dispatcher already exposes `/mesh/state/<id>`. The MCP server is just a thin wrapper. Add a `search`, `unread_for_agent`, or whatever-you-need tool the same way.
+- **New read endpoints** — the dispatcher's `do_GET` handler is a straightforward router. Add a query like `/mesh/search?q=...` over `subject` or `body` and a matching MCP tool the same way `inbox`/`thread` were added. The SQLite layer is plain `conn.execute` — no ORM in the way.
 
 ## Where NOT to extend
 

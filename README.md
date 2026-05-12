@@ -39,7 +39,8 @@ Discord exists for *humans* — so you can watch agent-to-agent traffic in real 
 | `dispatcher/dispatcher.py` | Accepts `POST /mesh/ping`, persists to SQLite, pushes to per-agent listeners, posts to Discord |
 | `dispatcher/discord_mirror.py` | Discord side car — fire-and-forget, never blocks delivery |
 | `listeners/listener.py` | Per-agent HTTP listener. Writes inbox file. Optional auto-reply via subprocess. |
-| `mcp/server.js` | MCP server exposing `ping` / `ping_history` / `ping_read` to MCP clients (Claude Code, Claude Desktop, etc.) |
+| `mcp/server.js` | MCP server exposing `ping` / `ping_history` / `ping_read` / `inbox` / `thread` to MCP clients (Claude Code, Claude Desktop, etc.) |
+| `install.sh` / `setup-discord.sh` / `uninstall.sh` | Interactive setup scripts |
 | `schema/envelope-v0.5.json` | JSON Schema for the wire envelope |
 | `examples/agents.json` | Agent registry template |
 | `examples/discord-channels.json` | Channel map template |
@@ -50,48 +51,67 @@ About **1000 lines of Python + JavaScript total.** Small enough to read end-to-e
 ## Quickstart
 
 ```bash
-# 1. Clone
 git clone https://github.com/<you>/disco-bus.git ~/github/disco-bus
 cd ~/github/disco-bus
+./install.sh
+```
 
-# 2. Install MCP server deps (only if you'll use MCP clients)
+That's it. The wizard asks what agents you want, allocates ports, writes configs, installs systemd user services, starts everything, and smoke-tests with a real ping.
+
+**Want Discord mirroring too?** (You can watch agent-to-agent traffic in real time in Discord channels.) Run this after `install.sh`:
+
+```bash
+./setup-discord.sh
+```
+
+It walks you through creating a Discord bot (60-second one-time setup) and asks for channel IDs.
+
+**Want to remove everything?**
+
+```bash
+./uninstall.sh
+```
+
+Stops services, removes systemd units, and asks before deleting any data. The source repo stays put.
+
+### Manual setup (skip the scripts)
+
+<details><summary>If you'd rather do it by hand, click to expand.</summary>
+
+```bash
+# 1. MCP deps
 cd mcp && npm install && cd ..
 
-# 3. Set up config dir
+# 2. Config
 mkdir -p ~/.disco-bus
 cp examples/agents.json ~/.disco-bus/agents.json
 # Edit ~/.disco-bus/agents.json with your real agent names and listener ports.
 
-# 4. (Optional) Set up Discord mirror
-#    a. Create a Discord bot at https://discord.com/developers — give it Send Messages perm in your guild
-#    b. Save the bot token:
+# 3. (Optional) Discord
 echo "YOUR_BOT_TOKEN" > ~/.disco-bus/discord-token
 chmod 600 ~/.disco-bus/discord-token
-#    c. Copy and edit channel map:
 cp examples/discord-channels.json ~/.disco-bus/discord-channels.json
-#       Replace placeholder channel IDs with real ones from Discord (Developer Mode → Copy Channel ID).
+# Replace placeholder channel IDs with real ones from Discord (Developer Mode → Copy Channel ID).
 
-# 5. Install systemd units (user services)
-mkdir -p ~/.config/systemd/user
+# 4. systemd units
+mkdir -p ~/.config/systemd/user ~/.config/disco-bus
 cp systemd/disco-bus-dispatcher.service ~/.config/systemd/user/
 cp systemd/disco-bus-listener@.service  ~/.config/systemd/user/
 
-# 6. Per-agent env files (one per agent in agents.json)
-mkdir -p ~/.config/disco-bus
+# Per-agent env files
 cat > ~/.config/disco-bus/listener-alpha.env <<'EOF'
 DISCOBUS_AGENT=alpha
 DISCOBUS_PORT=9131
 EOF
-# repeat for beta, gamma, …
+# repeat for each agent
 
-# 7. Start everything
+# 5. Start
 systemctl --user daemon-reload
 systemctl --user enable --now disco-bus-dispatcher.service
 systemctl --user enable --now disco-bus-listener@alpha.service
-systemctl --user enable --now disco-bus-listener@beta.service
-systemctl --user enable --now disco-bus-listener@gamma.service
+# ...
 
-# 8. Smoke test
+# 6. Smoke test
 curl -X POST http://127.0.0.1:9100/mesh/ping -H "Content-Type: application/json" -d '{
   "mesh_version": "0.5",
   "from": "alpha",
@@ -104,9 +124,11 @@ curl -X POST http://127.0.0.1:9100/mesh/ping -H "Content-Type: application/json"
 # The envelope shows up in Discord (if mirror is configured).
 ```
 
+</details>
+
 ## MCP setup
 
-To give an LLM agent the `ping` / `ping_history` / `ping_read` tools:
+To give an LLM agent the bus tools (`ping`, `ping_history`, `ping_read`, `inbox`, `thread`):
 
 **Claude Desktop (`~/.config/Claude/claude_desktop_config.json`):**
 
@@ -128,6 +150,16 @@ To give an LLM agent the `ping` / `ping_history` / `ping_read` tools:
 **Claude Code (`~/.claude/settings.json` mcpServers section):** same shape.
 
 Each MCP instance is identity-bound: it can only send `from: <DISCOBUS_AGENT>`. Callers cannot spoof the sender.
+
+### Tools
+
+| Tool | What it does |
+|---|---|
+| `ping(to, subject, body, reply_to?)` | Send a message. Wakes the recipient's listener immediately. |
+| `ping_history(limit?)` | List recent envelopes across all agents, newest first. Summary form. |
+| `ping_read(id)` | Fetch the full envelope (including body) for one message id. |
+| `inbox(agent?, limit?, unread_only?)` | List messages addressed to an agent (default: this one). `unread_only=true` filters to messages you haven't replied to. |
+| `thread(id)` | Walk the entire reply chain — give any message id, get the whole conversation in chronological order. |
 
 ## Auto-reply (optional)
 
@@ -173,6 +205,7 @@ All paths can be overridden via env. Defaults in `~/.disco-bus/`.
 | `DISCOBUS_AGENT` | (required, no default) | Agent identity for listener + MCP |
 | `DISCOBUS_AUTO_REPLY` | (unset = disabled) | Optional auto-reply command |
 | `DISCOBUS_AUTO_REPLY_TIMEOUT` | `120` | Auto-reply timeout in seconds |
+| `DISCOBUS_MAX_BODY_BYTES` | `1048576` (1 MiB) | Reject envelopes whose JSON-encoded body exceeds this size |
 
 ## Limitations
 

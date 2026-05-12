@@ -2,6 +2,23 @@
 
 ## v0.1.0 — Initial public release
 
+**Onboarding** — `install.sh` (interactive wizard for bus-only setup, auto-allocates ports, writes systemd units, smoke-tests end-to-end), `setup-discord.sh` (walks through Discord bot creation + channel ID collection), `uninstall.sh` (clean removal with explicit confirmation before any data deletion). The README's "manual setup" path is now an expandable section — the script path is the default.
+
+**API additions** (incorporating early review feedback):
+
+- `GET /mesh/inbox/<agent>` — list messages addressed to an agent, newest first. Optional `?unread_only=true` filters to messages with no reply from the recipient.
+- `GET /mesh/thread/<id>` — walk the full reply chain. Given any message id, returns the root + every descendant in chronological order.
+- `DISCOBUS_MAX_BODY_BYTES` env (default 1 MiB) — reject oversized payloads at the dispatcher boundary.
+
+**MCP server** — two new tools matching the new endpoints:
+
+- `inbox(agent?, limit?, unread_only?)` — defaults to the caller's agent.
+- `thread(id)` — full conversation reconstruction.
+
+Total surface: 5 MCP tools (`ping`, `ping_history`, `ping_read`, `inbox`, `thread`).
+
+**Foundation:**
+
 First public cut. Brings together:
 
 - **Dispatcher** (HTTP, SQLite-backed) — `POST /mesh/ping` accepts envelopes, pushes to per-agent listeners, persists state.

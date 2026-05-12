@@ -48,6 +48,8 @@ const server = new McpServer({
     `Disco-Bus — push-based agent mesh. You are ${AGENT_ID}. ` +
     `Send pings via 'ping'. List recent traffic via 'ping_history'. ` +
     `Read a specific message's full body via 'ping_read'. ` +
+    `List messages addressed to you via 'inbox'. ` +
+    `Walk a full reply chain via 'thread'. ` +
     `Other agents: ${peerList}.`,
 });
 
@@ -222,18 +224,106 @@ server.tool(
         };
       }
       return {
+        content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+      };
+    } catch (e) {
+      return {
+        content: [{ type: "text", text: `Dispatcher unreachable at ${DISPATCHER}: ${e.message}` }],
+      };
+    }
+  }
+);
+
+// --- inbox ---
+server.tool(
+  "inbox",
+  `List messages addressed to an agent (default: this agent). Use unread_only ` +
+    `to filter to messages you have NOT yet replied to. Returns summary form ` +
+    `like ping_history — call ping_read(id) on anything you want to read fully.`,
+  {
+    agent: z
+      .string()
+      .optional()
+      .describe(`Agent whose inbox to read. Defaults to this MCP instance's agent (${AGENT_ID}).`),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(500)
+      .optional()
+      .default(50)
+      .describe("Max messages to return (default 50, max 500)."),
+    unread_only: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe("If true, only return messages with no reply from the recipient."),
+  },
+  async ({ agent, limit, unread_only }) => {
+    const target = agent || AGENT_ID;
+    const url = `${DISPATCHER}/mesh/inbox/${encodeURIComponent(target)}?limit=${limit}&unread_only=${unread_only}`;
+    try {
+      const r = await fetch(url);
+      const data = await r.json();
+      if (!r.ok) {
+        return {
+          content: [
+            { type: "text", text: `Dispatcher error (HTTP ${r.status}): ${JSON.stringify(data)}` },
+          ],
+        };
+      }
+      const lines = data.map(
+        (m) =>
+          `#${m.id} ${m.from}>${m.to} state=${m.state} ` +
+          `reply_to=${m.reply_to ?? "null"} subject=${JSON.stringify(m.subject)}`
+      );
+      const header = `Inbox for ${target}${unread_only ? " (unread only)" : ""} — ${data.length} message(s):`;
+      return {
         content: [
           {
             type: "text",
-            text: JSON.stringify(data, null, 2),
+            text: lines.length ? `${header}\n${lines.join("\n")}` : `${header}\n(empty)`,
           },
         ],
       };
     } catch (e) {
       return {
-        content: [
-          { type: "text", text: `Dispatcher unreachable at ${DISPATCHER}: ${e.message}` },
-        ],
+        content: [{ type: "text", text: `Dispatcher unreachable at ${DISPATCHER}: ${e.message}` }],
+      };
+    }
+  }
+);
+
+// --- thread ---
+server.tool(
+  "thread",
+  `Fetch a complete reply thread by message id. Walks back to the root and ` +
+    `returns every message in the conversation in chronological order. ` +
+    `Useful for catching up on context before responding.`,
+  {
+    id: z
+      .number()
+      .int()
+      .min(1)
+      .describe("Any message id in the thread. The root is computed automatically."),
+  },
+  async ({ id }) => {
+    try {
+      const r = await fetch(`${DISPATCHER}/mesh/thread/${id}`);
+      const data = await r.json();
+      if (!r.ok) {
+        return {
+          content: [
+            { type: "text", text: `Dispatcher error (HTTP ${r.status}): ${JSON.stringify(data)}` },
+          ],
+        };
+      }
+      return {
+        content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+      };
+    } catch (e) {
+      return {
+        content: [{ type: "text", text: `Dispatcher unreachable at ${DISPATCHER}: ${e.message}` }],
       };
     }
   }

@@ -42,6 +42,11 @@ AGENTS_PATH = Path(os.environ.get("DISCOBUS_AGENTS_FILE", str(Path.home() / ".di
 DELIVER_TIMEOUT_SEC = 10
 HISTORY_LIMIT_DEFAULT = 50
 HISTORY_LIMIT_MAX = 500
+INBOX_LIMIT_DEFAULT = 50
+INBOX_LIMIT_MAX = 500
+# Cap on the JSON-encoded body. Default 1 MiB. Override via env if you have a
+# specific reason to allow larger payloads.
+MAX_BODY_BYTES = int(os.environ.get("DISCOBUS_MAX_BODY_BYTES", str(1024 * 1024)))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [disco-bus] %(message)s")
 log = logging.getLogger("disco-bus")
@@ -157,6 +162,9 @@ def validate_envelope_input(data, valid_agents: set) -> tuple[bool, str | None]:
     rt = data.get("reply_to")
     if rt is not None and not (isinstance(rt, int) and rt >= 1):
         return False, "reply_to must be a positive integer or null"
+    body_bytes = len(json.dumps(data["body"]).encode("utf-8"))
+    if body_bytes > MAX_BODY_BYTES:
+        return False, f"body too large: {body_bytes} bytes > limit {MAX_BODY_BYTES}"
     return True, None
 
 
@@ -221,6 +229,88 @@ class DispatcherHandler(BaseHTTPRequestHandler):
             ).fetchall()
             conn.close()
             return self._json(200, [row_to_envelope(r) for r in rows])
+
+        # /mesh/inbox/<agent> — list messages addressed to that agent (newest first).
+        # Optional query: ?limit=N, ?unread_only=true (where "unread" means no
+        # reply exists from the recipient to this message).
+        if path.startswith("/mesh/inbox/"):
+            agent = path[len("/mesh/inbox/"):]
+            if not agent or "/" in agent:
+                return self._json(400, {"error": "invalid agent in path"})
+            qs = urllib.parse.parse_qs(parsed.query)
+            try:
+                limit = int(qs.get("limit", [INBOX_LIMIT_DEFAULT])[0])
+            except ValueError:
+                return self._json(400, {"error": "invalid limit"})
+            limit = max(1, min(limit, INBOX_LIMIT_MAX))
+            unread_only = qs.get("unread_only", ["false"])[0].lower() in ("true", "1", "yes")
+            conn = get_db()
+            if unread_only:
+                # Messages addressed to <agent> that have no reply *from* that
+                # agent. A "reply" is any row whose reply_to == m.id and
+                # from_agent == <agent>.
+                rows = conn.execute(
+                    """SELECT m.* FROM messages m
+                       WHERE m.to_agent = ?
+                         AND NOT EXISTS (
+                           SELECT 1 FROM messages r
+                           WHERE r.reply_to = m.id
+                             AND r.from_agent = ?
+                         )
+                       ORDER BY m.id DESC LIMIT ?""",
+                    (agent, agent, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM messages WHERE to_agent = ? ORDER BY id DESC LIMIT ?",
+                    (agent, limit),
+                ).fetchall()
+            conn.close()
+            return self._json(200, [row_to_envelope(r) for r in rows])
+
+        # /mesh/thread/<id> — full reply chain. Walks reply_to back to the root,
+        # then returns every message in that thread in chronological order.
+        if path.startswith("/mesh/thread/"):
+            try:
+                msg_id = int(path.rsplit("/", 1)[-1])
+            except ValueError:
+                return self._json(400, {"error": "invalid id"})
+            conn = get_db()
+            # Walk back to root via reply_to
+            cur_id: int | None = msg_id
+            seen: set[int] = set()
+            root_id = msg_id
+            while cur_id is not None and cur_id not in seen:
+                seen.add(cur_id)
+                row = conn.execute(
+                    "SELECT reply_to FROM messages WHERE id = ?", (cur_id,)
+                ).fetchone()
+                if row is None:
+                    conn.close()
+                    return self._json(404, {"error": f"message {cur_id} not found"})
+                parent = row["reply_to"]
+                if parent is None:
+                    root_id = cur_id
+                    break
+                root_id = parent
+                cur_id = parent
+            # Recursive CTE to collect the whole thread under root_id
+            rows = conn.execute(
+                """WITH RECURSIVE thread(id) AS (
+                       SELECT id FROM messages WHERE id = ?
+                       UNION ALL
+                       SELECT m.id FROM messages m
+                       JOIN thread t ON m.reply_to = t.id
+                   )
+                   SELECT * FROM messages WHERE id IN thread
+                   ORDER BY id ASC""",
+                (root_id,),
+            ).fetchall()
+            conn.close()
+            return self._json(200, {
+                "root_id": root_id,
+                "messages": [row_to_envelope(r) for r in rows],
+            })
 
         return self._json(404, {"error": "not found"})
 
