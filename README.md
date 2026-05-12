@@ -74,6 +74,75 @@ It walks you through creating a Discord bot (60-second one-time setup) and asks 
 
 Stops services, removes systemd units, and asks before deleting any data. The source repo stays put.
 
+### Non-interactive install (for LLM agents and CI)
+
+Don't want prompts? Fill out a JSON manifest and run `robot-install.sh`.
+
+```bash
+# Edit robot.install (or make a copy) — see schema below
+./robot-install.sh robot.install
+```
+
+The script emits a single JSON object on stdout for the caller to parse. All human-readable progress goes to stderr.
+
+```json
+{
+  "ok": true,
+  "steps": {
+    "deps":       {"ok": true, "python": "3.12"},
+    "config":     {"ok": true, "agents": {"alice": "http://127.0.0.1:9131/inbox", ...}},
+    "npm":        {"ok": true},
+    "systemd":    {"ok": true, "dispatcher_port": 9100},
+    "smoke_test": {"ok": true, "msg_id": 1, "final_state": "DELIVERED"}
+  }
+}
+```
+
+On failure, `ok` is `false`, exit code is `1`, and `error` describes which step blew up.
+
+**Manifest schema (all fields optional except `agents`):**
+
+```json
+{
+  "dispatcher": {
+    "port": 9100,
+    "max_body_bytes": 1048576
+  },
+  "agents": [
+    {"name": "alice"},
+    {"name": "bob", "port": 9132}
+  ],
+  "listener_port_start": 9131,
+  "discord": {
+    "enabled": false,
+    "token_file": "/path/to/your/discord-token",
+    "global_channel_id": 0,
+    "agent_channels": {"alice": 1234567890123456789}
+  },
+  "mcp": { "install_deps": true },
+  "smoke_test": { "enabled": true, "from": null, "to": null }
+}
+```
+
+Notes:
+- Agent names must match `^[a-zA-Z][a-zA-Z0-9_-]{0,30}$`. The script validates and rejects bad names with a clear error.
+- If an agent has no `port`, it gets auto-allocated starting from `listener_port_start`.
+- **Discord tokens are NOT embedded in the manifest.** Set `token_file` to a path the script can read; the token is copied to `~/.disco-bus/discord-token` with `chmod 600`. This keeps secrets out of any version control.
+- `// line comments` are stripped before JSON parsing, so you can annotate your manifest.
+- Re-runnable: existing agents are preserved; new ones are merged in. Existing env files are kept as-is.
+
+**Sandbox testing:** override paths via env so you can dry-run without touching real state:
+
+```bash
+DISCOBUS_INSTALL_CONFIG_DIR=/tmp/test-config \
+DISCOBUS_INSTALL_ENV_DIR=/tmp/test-env \
+DISCOBUS_INSTALL_SYSTEMD_DIR=/tmp/test-systemd \
+DISCOBUS_INSTALL_DRY_RUN=1 \
+./robot-install.sh /path/to/manifest.json
+```
+
+`DRY_RUN=1` runs through dependency check + config write + npm install but skips writing systemd units and the smoke test.
+
 ### Manual setup (skip the scripts)
 
 <details><summary>If you'd rather do it by hand, click to expand.</summary>

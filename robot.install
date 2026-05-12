@@ -1,0 +1,25 @@
+{
+  "dispatcher": {
+    "port": 9100,
+    "max_body_bytes": 1048576
+  },
+  "agents": [
+    {"name": "alice"},
+    {"name": "bob"}
+  ],
+  "listener_port_start": 9131,
+  "discord": {
+    "enabled": false,
+    "token_file": null,
+    "global_channel_id": 0,
+    "agent_channels": {}
+  },
+  "mcp": {
+    "install_deps": true
+  },
+  "smoke_test": {
+    "enabled": true,
+    "from": null,
+    "to": null
+  }
+}
