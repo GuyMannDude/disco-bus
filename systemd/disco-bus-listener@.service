@@ -1,0 +1,25 @@
+[Unit]
+Description=Disco-Bus listener for agent %i
+After=network-online.target disco-bus-dispatcher.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/disco-bus/listener-%i.env
+ExecStart=/usr/bin/python3 %h/github/disco-bus/listeners/listener.py
+WorkingDirectory=%h/github/disco-bus/listeners
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# The EnvironmentFile must set DISCOBUS_AGENT and DISCOBUS_PORT.
+# Example contents of ~/.config/disco-bus/listener-alpha.env:
+#   DISCOBUS_AGENT=alpha
+#   DISCOBUS_PORT=9131
+#   # Optional:
+#   # DISCOBUS_AUTO_REPLY=/usr/local/bin/my-agent-reply.sh
+#   # DISCOBUS_AUTO_REPLY_TIMEOUT=60
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,6 @@
+{
+  "_comment": "Agent registry. The set of keys here is the set of valid agents (used by dispatcher validation + MCP server). Each agent has a listener URL the dispatcher POSTs envelopes to. Localhost is the v0.5 baseline — multi-machine support is a future extension. Ports are arbitrary; pick something open on 127.0.0.1.",
+  "alpha": { "url": "http://127.0.0.1:9131/inbox" },
+  "beta":  { "url": "http://127.0.0.1:9132/inbox" },
+  "gamma": { "url": "http://127.0.0.1:9133/inbox" }
+}

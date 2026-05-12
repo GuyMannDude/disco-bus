@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/disco-bus/schema/envelope-v0.5.json",
+  "title": "Disco-Bus envelope v0.5",
+  "description": "Frozen contract for v0.5. Listeners reject any envelope with mesh_version != \"0.5\".",
+  "type": "object",
+  "required": [
+    "mesh_version",
+    "from",
+    "to",
+    "subject",
+    "body",
+    "state",
+    "created_at"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "mesh_version": {
+      "description": "Frozen version string. Listeners must reject any other value with state=FAILED.",
+      "type": "string",
+      "const": "0.5"
+    },
+    "id": {
+      "description": "SQLite primary key. Assigned by dispatcher on acceptance. Absent on inbound /mesh/ping body.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "tracking_id": {
+      "description": "Human-readable handle: msg-{id}-{YYYYMMDDTHHMMSS}. Assigned by dispatcher on acceptance.",
+      "type": "string",
+      "pattern": "^msg-[0-9]+-[0-9]{8}T[0-9]{6}$"
+    },
+    "from": {
+      "description": "Sender agent. Server-bound from MCP identity — caller cannot spoof.",
+      "type": "string"
+    },
+    "to": {
+      "description": "Target agent. Must exist in the agents.json registry.",
+      "type": "string"
+    },
+    "reply_to": {
+      "description": "Parent message id. Links replies to their prompt. Null/absent for new pings.",
+      "type": ["integer", "null"],
+      "minimum": 1
+    },
+    "subject": {
+      "description": "Short label, free-form. Convention: kebab-case, under 80 chars.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "body": {
+      "description": "Free-form JSON payload. Schema is sender's choice.",
+      "type": "object"
+    },
+    "state": {
+      "description": "Lifecycle state. v0.5 has only three: SENT, DELIVERED, FAILED.",
+      "type": "string",
+      "enum": ["SENT", "DELIVERED", "FAILED"]
+    },
+    "created_at": {
+      "description": "ISO-8601 UTC timestamp of dispatcher acceptance.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "delivered_at": {
+      "description": "ISO-8601 UTC timestamp when listener returned 200. Null until delivered.",
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "delivery_error": {
+      "description": "Error message if state=FAILED. Null otherwise.",
+      "type": ["string", "null"],
+      "maxLength": 1000
+    }
+  }
+}

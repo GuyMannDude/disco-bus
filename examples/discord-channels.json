@@ -1,0 +1,9 @@
+{
+  "_comment": "Map agent names to Discord channel IDs. `global` (optional) is a firehose channel that gets every envelope. `agents.<name>` (optional, one per agent) gets envelopes where that agent is the sender or recipient. Omit any key to skip that mirror target. Channel IDs are Discord's snowflake IDs (right-click channel in Developer Mode → Copy Channel ID).",
+  "global": 111111111111111111,
+  "agents": {
+    "alpha": 222222222222222222,
+    "beta":  333333333333333333,
+    "gamma": 444444444444444444
+  }
+}

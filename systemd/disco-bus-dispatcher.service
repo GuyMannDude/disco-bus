@@ -1,0 +1,24 @@
+[Unit]
+Description=Disco-Bus Dispatcher — push-based agent-to-agent mesh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/github/disco-bus/dispatcher/dispatcher.py
+WorkingDirectory=%h/github/disco-bus/dispatcher
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Adjust if you cloned to a different path:
+# Environment=DISCOBUS_HOST=127.0.0.1
+# Environment=DISCOBUS_PORT=9100
+# Environment=DISCOBUS_DB=%h/.disco-bus/disco-bus.sqlite
+# Environment=DISCOBUS_AGENTS_FILE=%h/.disco-bus/agents.json
+# Environment=DISCOBUS_DISCORD_TOKEN_FILE=%h/.disco-bus/discord-token
+# Environment=DISCOBUS_CHANNELS=%h/.disco-bus/discord-channels.json
+
+[Install]
+WantedBy=default.target

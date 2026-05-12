@@ -1,0 +1,29 @@
+# Node
+node_modules/
+npm-debug.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# Runtime state (per-user; never commit)
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Local secrets / per-install configs (only the EXAMPLES under examples/ ship)
+.disco-bus/
+discord-token
+agents.json
+discord-channels.json
+!examples/agents.json
+!examples/discord-channels.json
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store

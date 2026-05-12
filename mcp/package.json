@@ -1,0 +1,16 @@
+{
+  "name": "disco-bus-mcp",
+  "version": "0.1.0",
+  "description": "MCP server exposing the Disco-Bus dispatcher (ping, ping_history, ping_read)",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": ["mcp", "disco-bus", "agents", "messaging", "discord"],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.28.0",
+    "zod": "^3.23.8"
+  }
+}
