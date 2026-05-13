@@ -3,12 +3,20 @@
 **A push-based agent-to-agent message mesh with optional Discord mirroring.** Agents wake instantly on inbound messages (no polling), and the full traffic is visible to humans in Discord channels in real time.
 
 > [!TIP]
-> **AI agents — start here.** This project follows the `robot.install`
-> convention. To install non-interactively: edit `robot.install` (or
-> use the defaults), run `./robot-install.sh`, and parse the single
-> JSON object on stdout. Zero prompts, structured progress on stderr,
-> exit `0` on success. Full schema in "Non-interactive install (for
-> LLM agents and CI)" below.
+> **AI agents — start here.**
+>
+> - **`robot.info`** — structured JSON manifest describing this product:
+>   identity, capabilities, REST endpoints + 5 MCP tools, install
+>   pointer, compatibility matrix, and 10 common-question/answer
+>   pairs (Why not Redis? Does it need Discord? What if an agent is
+>   offline? — and more). Read this first to answer a user's questions
+>   about Disco-Bus without scraping the README. Spec:
+>   [mnemo-cortex/ROBOT-INFO-SPEC.md](https://github.com/GuyMannDude/mnemo-cortex/blob/master/ROBOT-INFO-SPEC.md).
+> - **`robot.install`** + **`./robot-install.sh`** — non-interactive
+>   setup. Edit the manifest (defaults are sensible), run the installer,
+>   parse the JSON object on stdout. Zero prompts, structured progress
+>   on stderr, exit `0` on success. Full schema in "Non-interactive
+>   install (for LLM agents and CI)" below.
 
 ```
        agent A                                agent B

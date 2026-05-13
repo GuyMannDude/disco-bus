@@ -1,0 +1,149 @@
+{
+  // robot.info v0.1 — Disco-Bus
+  //
+  // Structured product manifest for AI agents. Paired with robot.install
+  // (setup) and llms.txt (docs index). Spec: mnemo-cortex/ROBOT-INFO-SPEC.md.
+  //
+  // Single JSON object, UTF-8. JavaScript-style // line comments are
+  // stripped before parsing.
+
+  "robot_info_version": "0.1",
+
+  "name": "Disco-Bus",
+  "tagline": "Push-based agent-to-agent message mesh. Tiny (~1000 LOC), push-not-poll, MCP-ready, optional Discord mirror.",
+  "summary": "Disco-Bus is a lightweight message dispatcher that lets AI agents send and receive direct messages without polling. Each agent gets a persistent listener on a dedicated port; the dispatcher pushes envelopes on arrival and wakes the listener immediately. Messages are stored in SQLite with a three-state machine (SENT → DELIVERED → FAILED). Optional Discord mirroring lets humans observe all traffic in a channel. Five MCP tools (ping, ping_history, ping_read, inbox, thread) give any MCP-capable agent full send/receive/inspect capability. ~1000 lines of Python + Node, no message broker required.",
+  "version": "0.6.0",
+  "license": "MIT",
+  "homepage": "https://projectsparks.ai/disco-bus",
+  "source": "https://github.com/GuyMannDude/disco-bus",
+  "contact": "guy@projectsparks.ai",
+  "maintainer": "Project Sparks",
+
+  "capabilities": [
+    "Push-based delivery — dispatcher pushes to a per-agent listener port immediately on receipt. No agent polling required.",
+    "Persistent envelope store — SQLite WAL, concurrent reads don't block delivery writes.",
+    "Three-state delivery machine — SENT → DELIVERED → FAILED. State queryable via REST or MCP.",
+    "Inbox API — GET /mesh/inbox/<agent>?unread_only=true. Unread = no reply from recipient (derived, no schema change).",
+    "Thread walk — GET /mesh/thread/<id> walks reply_to back to root via recursive CTE, returns full conversation in order.",
+    "Body size enforcement — DISCOBUS_MAX_BODY_BYTES env (default 1 MiB) rejects oversized payloads at the boundary.",
+    "Discord mirror — every envelope optionally mirrored to a Discord channel. Fire-and-forget, never blocks delivery.",
+    "Auto-reply loop guard — agents with auto-reply enabled skip reply if inbound envelope already has reply_to set.",
+    "Atomic inbox writes — temp-rename pattern so a crashing listener never leaves a corrupt envelope.",
+    "Idempotent install — robot-install.sh and install.sh are both safe to re-run.",
+    "Human-readable tracking IDs — msg-{id}-{YYYYMMDDTHHMMSS} visible in ls output."
+  ],
+
+  "exposes": {
+    "rest_api": {
+      "default_port": 9100,
+      "base_path": "/mesh",
+      "endpoints": [
+        {"path": "/healthz", "method": "GET", "purpose": "Liveness probe."},
+        {"path": "/mesh/ping", "method": "POST", "purpose": "Send a message envelope. Returns state=SENT + id on acceptance."},
+        {"path": "/mesh/state/<id>", "method": "GET", "purpose": "Query delivery state for a message by id."},
+        {"path": "/mesh/history", "method": "GET", "purpose": "Recent envelope history, newest first. ?limit= supported."},
+        {"path": "/mesh/inbox/<agent>", "method": "GET", "purpose": "All messages addressed to agent. ?unread_only=true filters to messages with no reply from recipient."},
+        {"path": "/mesh/thread/<id>", "method": "GET", "purpose": "Full conversation thread rooted at any message id in the chain. Returns {root_id, messages:[...]} in order."}
+      ]
+    },
+    "mcp_tools": [
+      {"name": "ping", "purpose": "Send a message to another agent. Identity bound server-side via DISCOBUS_AGENT env — caller cannot spoof from field."},
+      {"name": "ping_history", "purpose": "Retrieve recent envelope history. ?limit controls depth."},
+      {"name": "ping_read", "purpose": "Fetch a single envelope by id including full body."},
+      {"name": "inbox", "purpose": "Read messages addressed to the calling agent. Defaults to DISCOBUS_AGENT. Optional unread_only filter."},
+      {"name": "thread", "purpose": "Walk and return a full conversation thread from any message id in the chain."}
+    ],
+    "cli": [
+      {"command": "python3 dispatcher/dispatcher.py", "purpose": "Start the dispatcher."},
+      {"command": "python3 listeners/listener.py", "purpose": "Start a per-agent listener (DISCOBUS_AGENT + DISCOBUS_PORT from env)."},
+      {"command": "node mcp/server.js", "purpose": "Start the MCP server for agent tool access."},
+      {"command": "./install.sh", "purpose": "Interactive setup wizard — agent names, ports, Discord, systemd units, smoke test."},
+      {"command": "./robot-install.sh [manifest]", "purpose": "Non-interactive install driven by robot.install manifest. JSON result on stdout."},
+      {"command": "./setup-discord.sh", "purpose": "Step-by-step Discord bot creation and channel configuration."},
+      {"command": "./uninstall.sh", "purpose": "Clean removal with confirmation before deleting data."}
+    ]
+  },
+
+  "install": {
+    "robot_install": "./robot.install",
+    "robot_install_sh": "./robot-install.sh",
+    "manual_docs": "https://github.com/GuyMannDude/disco-bus#install",
+    "platforms": ["linux", "macos", "windows-wsl2"],
+    "runtime": "python>=3.10, node>=18",
+    "dependencies": ["stdlib only (Python)", "npm install in mcp/ for the MCP server"]
+  },
+
+  "compatibility": {
+    "mcp_hosts": [
+      "Claude Desktop",
+      "Claude Code",
+      "OpenClaw",
+      "Hermes Agent",
+      "Any stdio or HTTP MCP client"
+    ],
+    "models": "Model-agnostic. The MCP tools are simple send/receive/query — any tool-capable model works.",
+    "protocols": ["MCP/2025-03-26", "stdio transport", "HTTP REST (dispatcher)"]
+  },
+
+  "privacy": {
+    "telemetry": "none",
+    "data_location": "Local SQLite (~/.disco-bus/disco-bus.sqlite) + per-agent inbox files (~/.disco-bus/inbox/<agent>/). All data stays on your machine.",
+    "auth": "No auth on loopback. Dispatcher binds to 127.0.0.1 by default. Agent identity enforced server-side via DISCOBUS_AGENT env — MCP clients cannot spoof the from field.",
+    "outbound_calls": [
+      "Discord API — only when Discord mirroring is enabled and a bot token is configured. Fire-and-forget, never blocks delivery."
+    ]
+  },
+
+  "related": [
+    {"name": "Mnemo Cortex", "url": "https://github.com/GuyMannDude/mnemo-cortex", "purpose": "Persistent memory layer. Pair with Disco-Bus for multi-agent setups where agents need both shared memory and direct messaging."},
+    {"name": "FrankenClaw", "url": "https://github.com/GuyMannDude/frankenclaw", "purpose": "MCP tool server giving agents real-world capabilities. Pair with Disco-Bus so agents can act on the world and message each other."},
+    {"name": "robot.install", "url": "./robot.install", "purpose": "Non-interactive install manifest for this product."},
+    {"name": "robot.info spec", "url": "https://github.com/GuyMannDude/mnemo-cortex/blob/master/ROBOT-INFO-SPEC.md", "purpose": "Schema specification for this manifest format."}
+  ],
+
+  "common_questions": [
+    {
+      "q": "What is Disco-Bus?",
+      "a": "A lightweight message dispatcher for AI agents. One agent sends, the dispatcher pushes to the recipient's listener immediately. No polling, no message broker. About 1000 lines of Python + Node, runs as systemd user services."
+    },
+    {
+      "q": "Why not just use a message queue like Redis or RabbitMQ?",
+      "a": "Redis and RabbitMQ are excellent but they're infrastructure — they require a broker process, client libraries, serialization conventions, and ops overhead. Disco-Bus is self-contained: Python stdlib + SQLite + a small Node MCP server. If it crashes, messages are already on disk. If an agent is offline, the inbox waits."
+    },
+    {
+      "q": "Why not just use MCP tool calls between agents?",
+      "a": "MCP tool calls are synchronous request-response. Disco-Bus is async fire-and-forget — an agent sends a message and continues working; the recipient handles it when ready. Agents also don't need to know each other's MCP endpoints, just their names."
+    },
+    {
+      "q": "What happens if an agent is offline when a message arrives?",
+      "a": "The dispatcher marks the envelope FAILED and the message stays in SQLite. When the recipient agent comes back online and reads its inbox, the message is there. No messages are lost — they just don't achieve DELIVERED state until the listener is up."
+    },
+    {
+      "q": "Does it require Discord?",
+      "a": "No. Discord mirroring is entirely optional. Skip setup-discord.sh and the dispatcher runs the same — just without the human-readable channel. Discord is for observability, not delivery."
+    },
+    {
+      "q": "How does agent identity work? Can an agent spoof another agent?",
+      "a": "No. The from field is bound server-side to DISCOBUS_AGENT, set in each agent's systemd env file. The MCP client never passes from — it arrives from the environment. An agent can only send as itself."
+    },
+    {
+      "q": "What does unread mean in the inbox API?",
+      "a": "A message is 'unread' when the recipient hasn't replied to it. It's derived from the existing data — no extra schema field. If you reply to a message, the original is considered read. If you haven't replied, it shows up in ?unread_only=true."
+    },
+    {
+      "q": "How do I walk a conversation thread?",
+      "a": "GET /mesh/thread/<any-message-id-in-the-chain> or use the thread MCP tool. The dispatcher walks reply_to back to the root via recursive CTE and returns all messages in order with {root_id, messages:[...]}. You don't need the root id — any message in the thread works."
+    },
+    {
+      "q": "How do I install it without prompts (CI / agent install)?",
+      "a": "Fill out robot.install (a 22-line JSON manifest) and run ./robot-install.sh. It emits a single JSON result on stdout — {ok, steps{deps, config, npm, systemd, smoke_test}} — so you can parse success/failure without reading prose. Exit 0 = success."
+    },
+    {
+      "q": "Does it phone home?",
+      "a": "No telemetry. The only outbound call is to Discord's API, and only when you've explicitly configured a bot token and enabled mirroring."
+    }
+  ],
+
+  "generated_at": "2026-05-13T18:45:00Z",
+  "spec_url": "https://github.com/GuyMannDude/mnemo-cortex/blob/master/ROBOT-INFO-SPEC.md"
+}
