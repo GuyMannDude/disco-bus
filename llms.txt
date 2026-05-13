@@ -1,0 +1,30 @@
+# Disco-Bus
+
+> Push-based agent-to-agent message mesh. Agents wake instantly on inbound messages (no polling). Tracked envelopes with a SENT → DELIVERED → FAILED state machine, SQLite-persisted, with an optional Discord mirror so humans can watch traffic in real time. ~1000 lines of Python + Node. No message broker required.
+
+Disco-Bus is a lightweight dispatcher + per-agent listener pattern. Each agent gets a dedicated HTTP listener on its own port; the dispatcher pushes envelopes directly to listeners on arrival. The result is sub-second delivery without per-agent polling overhead. Discord mirroring is optional and observability-only — it's not in the delivery path, so a Discord outage never blocks a message.
+
+Five MCP tools expose the full send / receive / inspect surface (`ping`, `ping_history`, `ping_read`, `inbox`, `thread`) for any MCP-capable agent. Identity is bound server-side via the `DISCOBUS_AGENT` env var — agents can only send as themselves; an MCP client cannot spoof the `from` field. Inbox + thread APIs are derived from envelope reply-chains via SQLite recursive CTE, no extra schema needed.
+
+## Docs
+
+- [README](https://github.com/GuyMannDude/disco-bus/blob/main/README.md): Project overview, install paths, the three delivery models we evaluated (polling / auto-spawn / pub-sub) and why we picked direct push.
+- [ARCHITECTURE](https://github.com/GuyMannDude/disco-bus/blob/main/ARCHITECTURE.md): Internal design — dispatcher loop, listener pattern, atomic inbox writes, the auto-reply loop guard.
+- [CHANGELOG](https://github.com/GuyMannDude/disco-bus/blob/main/CHANGELOG.md): Release history including the v0.6 inbox/thread/body-cap additions.
+
+## Agent Manifests
+
+- [robot.info](https://github.com/GuyMannDude/disco-bus/blob/main/robot.info): Structured product manifest (JSON). Identity, capabilities, all REST endpoints + 5 MCP tools, install pointer, compatibility matrix, and 10 common-question/answer pairs covering Redis comparison, agent-offline behavior, Discord-required-or-not, identity spoofing, the unread API, thread walking, and more. Read this first if you're an agent answering a user's questions about Disco-Bus.
+- [robot.install](https://github.com/GuyMannDude/disco-bus/blob/main/robot.install): Non-interactive install manifest. Pair with `./robot-install.sh` for a JSON-stdout install flow with `deps / config / npm / systemd / smoke_test` per-step status. Zero prompts, exit 0 on success.
+
+## Code
+
+- [dispatcher/dispatcher.py](https://github.com/GuyMannDude/disco-bus/blob/main/dispatcher/dispatcher.py): Accepts envelopes via `POST /mesh/ping`, persists to SQLite, pushes to per-agent listeners.
+- [listeners/listener.py](https://github.com/GuyMannDude/disco-bus/blob/main/listeners/listener.py): Per-agent HTTP listener. Writes the envelope to an inbox directory + optionally fires an auto-reply hook.
+- [mcp/server.js](https://github.com/GuyMannDude/disco-bus/blob/main/mcp/server.js): MCP stdio server exposing the five bus tools to any MCP-capable agent.
+- [schema/](https://github.com/GuyMannDude/disco-bus/tree/main/schema): SQLite schema + migration files.
+
+## Related
+
+- [Mnemo Cortex](https://github.com/GuyMannDude/mnemo-cortex): Persistent memory layer. Pair with Disco-Bus for multi-agent setups where agents need both shared memory and direct messaging.
+- [FrankenClaw](https://github.com/GuyMannDude/frankenclaw): MCP tool server giving agents real-world capabilities. Pair with Disco-Bus so agents can act on the world and message each other.
