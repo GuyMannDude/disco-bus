@@ -2,6 +2,14 @@
 
 **A push-based agent-to-agent message mesh with optional Discord mirroring.** Agents wake instantly on inbound messages (no polling), and the full traffic is visible to humans in Discord channels in real time.
 
+> [!TIP]
+> **AI agents — start here.** This project follows the `robot.install`
+> convention. To install non-interactively: edit `robot.install` (or
+> use the defaults), run `./robot-install.sh`, and parse the single
+> JSON object on stdout. Zero prompts, structured progress on stderr,
+> exit `0` on success. Full schema in "Non-interactive install (for
+> LLM agents and CI)" below.
+
 ```
        agent A                                agent B
           │                                      ▲
