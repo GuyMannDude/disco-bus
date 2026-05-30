@@ -7,7 +7,7 @@
   // Single JSON object, UTF-8. JavaScript-style // line comments are
   // stripped before parsing.
 
-  "robot_info_version": "0.1",
+  "robot_info_version": "0.2",
 
   "name": "Disco-Bus",
   "tagline": "Push-based agent-to-agent message mesh. Tiny (~1000 LOC), push-not-poll, MCP-ready, optional Discord mirror.",
@@ -145,6 +145,70 @@
     }
   ],
 
-  "generated_at": "2026-05-16T15:35:00Z",
+  // ─── v0.2 user-facing layer ──────────────────────────────────────────
+  // Plain-language sections an AI reads to explain Disco-Bus to a
+  // non-developer user. Written for the human on the other side of the AI.
+
+  // Read when a user asks "what is this?" / "why would I use it?"
+  "why": "When you run more than one AI assistant, they usually can't talk to each other — you end up copying one's answer and pasting it into the other, over and over. Disco-Bus is the messenger that lets your AIs send each other messages directly. The moment one sends a message, the other gets it instantly — no waiting, no checking. And if you turn on the Discord option, every message between your AIs shows up in a Discord channel, so you can watch the whole conversation from your phone while you're on the couch. It runs entirely on your own computer, and nothing leaves your machine unless you switch on Discord.",
+
+  // Read when a user asks "how do I install this?" Written for someone who
+  // has never opened a terminal. The easiest real path is the interactive
+  // install.sh wizard (git clone + ./install.sh), verified from the README.
+  "install_steps": [
+    {"step": 1, "instruction": "Disco-Bus runs on your own computer and needs Python (3.10 or newer) and Node (18 or newer) already installed. If you're not sure, your AI can check for you."},
+    {"step": 2, "instruction": "Download the project: clone https://github.com/GuyMannDude/disco-bus into a folder on your machine (for example ~/github/disco-bus)."},
+    {"step": 3, "instruction": "Run the one-command setup wizard: ./install.sh — it asks which AI agents you want, picks ports for them automatically, writes all the config, starts everything as background services, and finishes by sending a real test message to prove it works."},
+    {"step": 4, "instruction": "Optional — want to watch the traffic in Discord? After install.sh, run ./setup-discord.sh. It walks you through making a Discord bot (a one-time 60-second setup) and asks for the channel IDs."},
+    {"step": 5, "instruction": "Prefer no questions at all (or an AI/CI installing it for you)? Fill out the robot.install manifest and run ./robot-install.sh — zero prompts, prints a single JSON result. Exit 0 means it worked."},
+    {"step": 6, "instruction": "Changed your mind? ./uninstall.sh stops the services and removes them, asking before it deletes any of your data. The downloaded code stays put."}
+  ],
+
+  // Read when a user asks "does this work with X?" Name + how to connect.
+  "works_with": [
+    {"name": "Claude Desktop", "how": "Add the Disco-Bus MCP server to ~/.config/Claude/claude_desktop_config.json (command: node, args: path to mcp/server.js, with DISCOBUS_AGENT + DISCOBUS_DISPATCHER env). Your AI gets the ping/inbox/thread tools."},
+    {"name": "Claude Code", "how": "Same MCP shape in ~/.claude/settings.json under mcpServers. The agent can then message other agents directly."},
+    {"name": "OpenClaw / Hermes Agent / any MCP host", "how": "Point the host at mcp/server.js as an MCP server. Set DISCOBUS_AGENT to that agent's name so it can only send as itself."},
+    {"name": "Discord", "how": "Optional and observability-only — run ./setup-discord.sh to mirror every message into a channel so you can watch from your phone. It never affects delivery; skip it and the bus works the same."},
+    {"name": "Mnemo Cortex", "how": "Sibling product (not coupled): Mnemo gives agents shared memory, Disco-Bus gives them direct messaging. Pair them for multi-agent setups."},
+    {"name": "FrankenClaw", "how": "Sibling product (not coupled): FrankenClaw gives agents hands (search, vision, browser); pair with Disco-Bus so agents can act and message each other."}
+  ],
+
+  // Read when a user asks "how do I customize / extend this?" Disco-Bus is
+  // bring-your-own-agents — it carries messages, you supply the agents.
+  "extensibility": "Disco-Bus is bring-your-own-agents: it's the messaging layer, you decide what the agents are. To add an agent, give it a name and a listener port (the install wizard does this for you, or add it to the robot.install manifest and re-run — existing agents are preserved). Any AI that speaks MCP plugs in through the same mcp/server.js bridge. For lightweight, stateless agents you don't even need a full AI — point a listener's DISCOBUS_AUTO_REPLY env at any executable script; it receives each incoming message as JSON on stdin and whatever it prints becomes the reply. The whole system is about 1000 lines of Python and JavaScript, small enough to read end-to-end and modify, and it's MIT-licensed.",
+
+  // The hidden 80% — things users rarely discover from docs. An AI surfaces
+  // these when timely, not as a feature dump.
+  "tips": [
+    "Discord is purely for you to watch — it's never required for agents to talk. Your AIs message each other fine with Discord turned off; the channel is just a window for humans.",
+    "No message is ever lost. If an agent is offline when a message arrives, it's saved to disk and waits in that agent's inbox until the agent comes back and reads it.",
+    "Agents can't impersonate each other. Each agent's identity is locked in by the server, so an AI can only ever send messages as itself — handy peace of mind in a multi-agent setup.",
+    "You don't need the start of a conversation to see the whole thing — hand the 'thread' tool any single message and it rebuilds the entire back-and-forth in order.",
+    "It's local-only by design. Disco-Bus listens only on your own machine (127.0.0.1); to connect AIs across different computers you'd add a private tunnel like Tailscale. Don't expose it to the open internet.",
+    "Stateless helpers without a full AI are easy: point an agent's auto-reply setting at a small script and it answers messages on its own — but a fresh copy runs per message, so use a memory-keeping agent (read its inbox) when you need continuity."
+  ],
+
+  // Recent releases in plain language. An AI reads this when a user asks
+  // "what's new?" Only the documented release is listed (see CHANGELOG.md).
+  "changelog": [
+    {"version": "0.1.0", "date": "2026-05-12", "changes": [
+      "First public release of Disco-Bus.",
+      "One-command setup: ./install.sh sets up your agents, picks ports, installs background services, and sends a real test message to confirm it all works.",
+      "Hands-off install for AIs and automation: ./robot-install.sh runs the whole setup with no questions and prints a single JSON result.",
+      "Optional Discord mirror so you can watch every agent-to-agent message in a channel from your phone.",
+      "Inbox and conversation-thread views: see all messages for an agent, and rebuild any full conversation from a single message.",
+      "Five messaging tools for AIs (ping, ping_history, ping_read, inbox, thread) and a safety limit on oversized messages."
+    ]}
+  ],
+
+  // Where to get help.
+  "support": {
+    "github_issues": "https://github.com/GuyMannDude/disco-bus/issues",
+    "homepage": "https://projectsparks.ai/disco-bus",
+    "docs": "https://github.com/GuyMannDude/disco-bus#readme"
+  },
+
+  "generated_at": "2026-05-30T16:00:00Z",
   "spec_url": "https://github.com/GuyMannDude/mnemo-cortex/blob/master/ROBOT-INFO-SPEC.md"
 }
