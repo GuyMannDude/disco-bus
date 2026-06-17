@@ -7,7 +7,9 @@ them to the agent's runtime.
 
 Configured via env:
   DISCOBUS_AGENT       agent name (must exist in the agents registry; required)
-  DISCOBUS_PORT        port to bind on 127.0.0.1 (required)
+  DISCOBUS_PORT        port to bind (required)
+  DISCOBUS_LISTEN_HOST bind interface (default 127.0.0.1; set to a Tailscale IP
+                       for a cross-machine listener)
   DISCOBUS_DISPATCHER  dispatcher base URL (default: http://127.0.0.1:9100)
   DISCOBUS_AGENTS_FILE path to agents registry (default ~/.disco-bus/agents.json)
   DISCOBUS_INBOX       inbox root (default ~/.disco-bus/inbox)
@@ -55,7 +57,10 @@ AUTO_REPLY_CMD = os.environ.get("DISCOBUS_AUTO_REPLY", "").strip() or None
 AUTO_REPLY_TIMEOUT = int(os.environ.get("DISCOBUS_AUTO_REPLY_TIMEOUT", "120"))
 
 MESH_VERSION = "0.5"
-HOST = "127.0.0.1"
+# Bind host. Defaults to loopback (single-machine setups). Set DISCOBUS_LISTEN_HOST
+# to a specific interface IP (e.g. a Tailscale IP) for a cross-machine listener so
+# the dispatcher can reach it without exposing the port on 0.0.0.0.
+HOST = os.environ.get("DISCOBUS_LISTEN_HOST", "127.0.0.1")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [listener-{}] %(message)s".format(AGENT or "?"))
 log = logging.getLogger(f"listener-{AGENT}")
