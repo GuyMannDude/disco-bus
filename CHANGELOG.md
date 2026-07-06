@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## v0.6.0 — 2026-07-05 — Version anchor (backfill)
+
+Versions 0.2–0.6 shipped before the changelog rule reached this repo; robot.info
+carried the version forward without entries here. This entry anchors the current
+shipped state so the new robot.info drift-guard test (tests/test_robot_info.py)
+has a truth source: mesh v0.5 frozen envelope contract (schema/envelope-v0.5.json),
+SQLite-backed push dispatcher + per-agent HTTP listeners, MCP server (ping, inbox,
+thread, ping_read, ping_history), optional Discord mirror, install/uninstall
+scripts. From here on: every version bump gets an entry BEFORE robot.info moves.
+
 - **Listener bind host is now configurable** (`DISCOBUS_LISTEN_HOST`, default `127.0.0.1`). Problem: the listener hardcoded `HOST = "127.0.0.1"`, so a cross-machine agent could only receive pushes if its listener bound `0.0.0.0` (LAN-exposed) — the same anti-pattern the dispatcher already avoids. Fix: read the bind interface from `DISCOBUS_LISTEN_HOST` so a remote listener can bind a specific Tailscale IP and stay off the home LAN. Default is unchanged, so single-machine setups are unaffected.
 
 ## v0.1.0 — Initial public release
