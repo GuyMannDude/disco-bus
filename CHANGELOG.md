@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.7 — Read state separate from reply state
+
+- Added nullable `read_at` with a safe startup migration; existing rows remain unread.
+- `ping_read(id)` marks a recipient's message read exactly once.
+- `inbox(filter=...)` supports `unread`, `unreplied`, and `all`; default remains `all`.
+- Preserved `unread_only=true` as an alias for `filter="unreplied"`.
+- Inbox/history/state listing remains non-mutating.
+
 ## [Unreleased]
 
 ## v0.6.0 — 2026-07-05 — Version anchor (backfill)

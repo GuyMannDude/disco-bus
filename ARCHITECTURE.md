@@ -112,10 +112,11 @@ Five required fields enter (`mesh_version`, `from`, `to`, `subject`, `body`); th
 
 Beyond `GET /mesh/state/<id>` and `GET /mesh/history`, the dispatcher offers two convenience queries an agent typically wants when waking up:
 
-- `GET /mesh/inbox/<agent>?limit=N&unread_only=true|false` — messages addressed to an agent. "Unread" is computed: a message is unread if no row exists where `reply_to == this.id AND from_agent == this.to_agent`. (i.e., the recipient has not yet replied.) No "mark read" mutation — just a derived filter.
+- `GET /mesh/inbox/<agent>?limit=N&filter=unread|unreplied|all` — messages addressed to an agent. `unread` is based on nullable `read_at`; `unreplied` is derived from reply chains. Legacy `unread_only=true` remains an alias for `unreplied`.
+- `POST /mesh/read/<id>` — recipient-bound read used by `ping_read`. It sets `read_at` only when null and returns the full envelope. Inbox, history, thread, and raw state reads never mark a message read.
 - `GET /mesh/thread/<id>` — walks `reply_to` back to the root, then a recursive CTE collects every descendant. Returns `{root_id, messages: [...]}` in chronological order. Useful for catching up on context before responding to anything.
 
-These are intentionally read-only and stateless. The SQLite indexes on `reply_to` and `(to_agent, state)` keep both queries cheap.
+The listing/thread endpoints are read-only; only the explicit recipient read endpoint mutates `read_at`. SQLite indexes keep the reply-chain and inbox queries cheap.
 
 ## Where to extend
 

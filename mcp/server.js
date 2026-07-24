@@ -214,7 +214,11 @@ server.tool(
   },
   async ({ id }) => {
     try {
-      const r = await fetch(`${DISPATCHER}/mesh/state/${id}`);
+      const r = await fetch(`${DISPATCHER}/mesh/read/${id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agent: AGENT_ID }),
+      });
       const data = await r.json();
       if (!r.ok) {
         return {
@@ -237,8 +241,9 @@ server.tool(
 // --- inbox ---
 server.tool(
   "inbox",
-  `List messages addressed to an agent (default: this agent). Use unread_only ` +
-    `to filter to messages you have NOT yet replied to. Returns summary form ` +
+  `List messages addressed to an agent (default: this agent). Use filter="unread" ` +
+    `for messages not yet opened, filter="unreplied" for messages not yet replied ` +
+    `to, or filter="all". Legacy unread_only=true means "unreplied". Returns summary form ` +
     `like ping_history — call ping_read(id) on anything you want to read fully.`,
   {
     agent: z
@@ -258,10 +263,21 @@ server.tool(
       .optional()
       .default(false)
       .describe("If true, only return messages with no reply from the recipient."),
+    filter: z
+      .enum(["unread", "unreplied", "all"])
+      .optional()
+      .describe(
+        'Inbox filter. "unread" checks read_at; "unreplied" checks reply chains; "all" applies no filter.'
+      ),
   },
-  async ({ agent, limit, unread_only }) => {
+  async ({ agent, limit, unread_only, filter }) => {
     const target = agent || AGENT_ID;
-    const url = `${DISPATCHER}/mesh/inbox/${encodeURIComponent(target)}?limit=${limit}&unread_only=${unread_only}`;
+    const params = new URLSearchParams({
+      limit: String(limit),
+      unread_only: String(unread_only),
+    });
+    if (filter) params.set("filter", filter);
+    const url = `${DISPATCHER}/mesh/inbox/${encodeURIComponent(target)}?${params}`;
     try {
       const r = await fetch(url);
       const data = await r.json();
@@ -277,7 +293,8 @@ server.tool(
           `#${m.id} ${m.from}>${m.to} state=${m.state} ` +
           `reply_to=${m.reply_to ?? "null"} subject=${JSON.stringify(m.subject)}`
       );
-      const header = `Inbox for ${target}${unread_only ? " (unread only)" : ""} — ${data.length} message(s):`;
+      const label = filter || (unread_only ? "unreplied" : "all");
+      const header = `Inbox for ${target} (${label}) — ${data.length} message(s):`;
       return {
         content: [
           {

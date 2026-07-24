@@ -72,6 +72,11 @@
       "description": "Error message if state=FAILED. Null otherwise.",
       "type": ["string", "null"],
       "maxLength": 1000
+    },
+    "read_at": {
+      "description": "ISO-8601 UTC timestamp when the recipient first fetched the message through ping_read. Null until read.",
+      "type": ["string", "null"],
+      "format": "date-time"
     }
   }
 }

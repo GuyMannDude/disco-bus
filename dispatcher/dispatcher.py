@@ -64,7 +64,8 @@ CREATE TABLE IF NOT EXISTS messages (
     state TEXT NOT NULL DEFAULT 'SENT',
     created_at TEXT NOT NULL,
     delivered_at TEXT,
-    delivery_error TEXT
+    delivery_error TEXT,
+    read_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_to ON messages(to_agent, state);
 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
@@ -77,6 +78,10 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+    # Existing messages intentionally remain unread after this migration.
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+    if "read_at" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN read_at TEXT")
     conn.commit()
     conn.close()
 
@@ -182,6 +187,7 @@ def row_to_envelope(row) -> dict:
         "created_at": row["created_at"],
         "delivered_at": row["delivered_at"],
         "delivery_error": row["delivery_error"],
+        "read_at": row["read_at"],
     }
 
 
@@ -231,8 +237,8 @@ class DispatcherHandler(BaseHTTPRequestHandler):
             return self._json(200, [row_to_envelope(r) for r in rows])
 
         # /mesh/inbox/<agent> — list messages addressed to that agent (newest first).
-        # Optional query: ?limit=N, ?unread_only=true (where "unread" means no
-        # reply exists from the recipient to this message).
+        # Optional query: ?limit=N&filter=unread|unreplied|all.
+        # Legacy ?unread_only=true remains an alias for filter=unreplied.
         if path.startswith("/mesh/inbox/"):
             agent = path[len("/mesh/inbox/"):]
             if not agent or "/" in agent:
@@ -244,8 +250,22 @@ class DispatcherHandler(BaseHTTPRequestHandler):
                 return self._json(400, {"error": "invalid limit"})
             limit = max(1, min(limit, INBOX_LIMIT_MAX))
             unread_only = qs.get("unread_only", ["false"])[0].lower() in ("true", "1", "yes")
+            inbox_filter = qs.get("filter", [None])[0]
+            if inbox_filter is None:
+                inbox_filter = "unreplied" if unread_only else "all"
+            if inbox_filter not in ("unread", "unreplied", "all"):
+                return self._json(
+                    400, {"error": "filter must be one of: unread, unreplied, all"}
+                )
             conn = get_db()
-            if unread_only:
+            if inbox_filter == "unread":
+                rows = conn.execute(
+                    """SELECT * FROM messages
+                       WHERE to_agent = ? AND read_at IS NULL
+                       ORDER BY id DESC LIMIT ?""",
+                    (agent, limit),
+                ).fetchall()
+            elif inbox_filter == "unreplied":
                 # Messages addressed to <agent> that have no reply *from* that
                 # agent. A "reply" is any row whose reply_to == m.id and
                 # from_agent == <agent>.
@@ -315,14 +335,44 @@ class DispatcherHandler(BaseHTTPRequestHandler):
         return self._json(404, {"error": "not found"})
 
     def do_POST(self):
-        if self.path != "/mesh/ping":
-            return self._json(404, {"error": "not found"})
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
 
         length = int(self.headers.get("Content-Length", 0))
         try:
             data = json.loads(self.rfile.read(length))
         except json.JSONDecodeError as e:
             return self._json(400, {"error": f"invalid JSON: {e}"})
+
+        # Only ping_read uses this recipient-bound mutation. Listing inbox,
+        # history, threads, or raw state never marks a message read.
+        if path.startswith("/mesh/read/"):
+            try:
+                msg_id = int(path.rsplit("/", 1)[-1])
+            except ValueError:
+                return self._json(400, {"error": "invalid id"})
+            if not isinstance(data, dict) or not isinstance(data.get("agent"), str):
+                return self._json(400, {"error": "agent is required"})
+            conn = get_db()
+            row = conn.execute("SELECT * FROM messages WHERE id=?", (msg_id,)).fetchone()
+            if not row:
+                conn.close()
+                return self._json(404, {"error": "not found"})
+            if row["to_agent"] != data["agent"]:
+                conn.close()
+                return self._json(403, {"error": "only the recipient can mark this message read"})
+            if row["read_at"] is None:
+                conn.execute(
+                    "UPDATE messages SET read_at=? WHERE id=? AND read_at IS NULL",
+                    (now_utc(), msg_id),
+                )
+                conn.commit()
+                row = conn.execute("SELECT * FROM messages WHERE id=?", (msg_id,)).fetchone()
+            conn.close()
+            return self._json(200, row_to_envelope(row))
+
+        if path != "/mesh/ping":
+            return self._json(404, {"error": "not found"})
 
         agents = load_agents()
         valid_agents = set(agents.keys())
@@ -372,6 +422,7 @@ class DispatcherHandler(BaseHTTPRequestHandler):
             "created_at": created_at,
             "delivered_at": None,
             "delivery_error": None,
+            "read_at": None,
         }
 
         threading.Thread(target=deliver, args=(envelope, agents), daemon=True).start()

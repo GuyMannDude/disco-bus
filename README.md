@@ -242,8 +242,8 @@ Each MCP instance is identity-bound: it can only send `from: <DISCOBUS_AGENT>`. 
 |---|---|
 | `ping(to, subject, body, reply_to?)` | Send a message. Wakes the recipient's listener immediately. |
 | `ping_history(limit?)` | List recent envelopes across all agents, newest first. Summary form. |
-| `ping_read(id)` | Fetch the full envelope (including body) for one message id. |
-| `inbox(agent?, limit?, unread_only?)` | List messages addressed to an agent (default: this one). `unread_only=true` filters to messages you haven't replied to. |
+| `ping_read(id)` | Fetch the full envelope and mark it read for the recipient. Repeated reads preserve the original `read_at`. |
+| `inbox(agent?, limit?, unread_only?, filter?)` | List addressed messages. `filter` is `unread`, `unreplied`, or `all` (default). Legacy `unread_only=true` remains an alias for `unreplied`. |
 | `thread(id)` | Walk the entire reply chain — give any message id, get the whole conversation in chronological order. |
 
 ## Auto-reply (optional)
