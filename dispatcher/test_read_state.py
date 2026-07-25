@@ -107,6 +107,30 @@ class ReadStateTests(unittest.TestCase):
         self.assertEqual(self.get_json("/mesh/inbox/Opie?unread_only=true"), [])
         self.assertEqual(self.get_json("/mesh/inbox/Opie?filter=unreplied"), [])
 
+    def test_first_read_distinguishes_this_call_from_an_earlier_one(self):
+        # The bug: first and subsequent reads returned byte-identical payloads,
+        # so a reader seeing read_at could not tell whether its own call had
+        # just set it. Opie read the timestamp he had created and reported
+        # "already read" on brand-new mail.
+        first = self.post_json("/mesh/read/1", {"agent": "Opie"})
+        self.assertTrue(first["first_read"])
+
+        second = self.post_json("/mesh/read/1", {"agent": "Opie"})
+        self.assertFalse(second["first_read"])
+
+        # Guard the actual symptom, not just the flag: the two payloads must
+        # no longer be indistinguishable.
+        self.assertNotEqual(first, second)
+        self.assertEqual(second["read_at"], first["read_at"])
+
+    def test_first_read_flag_is_absent_from_listings(self):
+        # first_read describes a read call, not the message. Listing endpoints
+        # must not sprout it — inbox/history/state never mark anything read.
+        self.post_json("/mesh/read/1", {"agent": "Opie"})
+        self.assertNotIn("first_read", self.get_json("/mesh/state/1"))
+        for message in self.get_json("/mesh/inbox/Opie?filter=all"):
+            self.assertNotIn("first_read", message)
+
     def test_only_recipient_can_mark_read(self):
         with self.assertRaises(urllib.error.HTTPError) as caught:
             self.post_json("/mesh/read/1", {"agent": "Rocky"})

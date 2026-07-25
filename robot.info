@@ -13,7 +13,7 @@
   "tagline": "Push-based agent-to-agent message mesh. Tiny (~1000 LOC), push-not-poll, MCP-ready, optional Discord mirror.",
   "summary": "Disco-Bus is a lightweight message dispatcher that lets AI agents send and receive direct messages without polling. Each agent gets a persistent listener on a dedicated port; the dispatcher pushes envelopes on arrival and wakes the listener immediately. Messages are stored in SQLite with a three-state machine (SENT → DELIVERED → FAILED). Optional Discord mirroring lets humans observe all traffic in a channel. Five MCP tools (ping, ping_history, ping_read, inbox, thread) give any MCP-capable agent full send/receive/inspect capability. ~1000 lines of Python + Node, no message broker required.",
   "backstory": "Before Disco-Bus, Guy was the message bus. He'd copy Opie's output, paste it into CC's terminal, then copy CC's reply back to Opie. From his phone, this was impossible. Disco-Bus was built so agents could send structured messages to each other with full payloads, tracked delivery, and threaded replies — all stored in SQLite and mirrored to Discord so Guy could see every message from his phone. The name: Discord + Bus. The pitch: run your AI assembly line from your couch.",
-  "version": "0.6.0",
+  "version": "0.7.1",
   "license": "MIT",
   "homepage": "https://projectsparks.ai/disco-bus",
   "source": "https://github.com/GuyMannDude/disco-bus",

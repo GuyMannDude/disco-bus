@@ -361,15 +361,24 @@ class DispatcherHandler(BaseHTTPRequestHandler):
             if row["to_agent"] != data["agent"]:
                 conn.close()
                 return self._json(403, {"error": "only the recipient can mark this message read"})
+            # first_read tells the caller whether THIS call opened the message.
+            # Without it the response is identical either way, and a reader that
+            # sees a populated read_at cannot tell the timestamp its own call just
+            # wrote from one an earlier read left behind. Derived from rowcount,
+            # not the check above, so a losing racer is correctly told "not first".
+            first_read = False
             if row["read_at"] is None:
-                conn.execute(
+                cursor = conn.execute(
                     "UPDATE messages SET read_at=? WHERE id=? AND read_at IS NULL",
                     (now_utc(), msg_id),
                 )
                 conn.commit()
+                first_read = cursor.rowcount == 1
                 row = conn.execute("SELECT * FROM messages WHERE id=?", (msg_id,)).fetchone()
             conn.close()
-            return self._json(200, row_to_envelope(row))
+            # Not part of row_to_envelope: it describes this call, not the row, so
+            # inbox/history/state listings must not grow a meaningless field.
+            return self._json(200, {**row_to_envelope(row), "first_read": first_read})
 
         if path != "/mesh/ping":
             return self._json(404, {"error": "not found"})

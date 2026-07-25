@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.7.1 — `ping_read` reports whether THIS call opened the message
+
+- **Problem:** `ping_read` both marks a message read and returns `read_at`, so a
+  first read and a hundredth read came back byte-for-byte identical. A reader
+  handed a brand-new message id saw a populated `read_at` — the timestamp its own
+  call had just written — and reported the message as already read. Observed live:
+  Opie stopped acting on fresh bus mail the day v0.7 landed.
+- **Fix:** `/mesh/read/{id}` now returns `first_read`, taken from the guarded
+  UPDATE's rowcount so a losing racer is correctly told it was not first. The MCP
+  `ping_read` leads with a plain-language banner (`NEW —` / `ALREADY READ —`)
+  stating that `read_at` on a first read was set by that call.
+- `first_read` describes the call, not the row: inbox/history/state listings are
+  unchanged and still non-mutating.
+- Bumped `robot.info` to match — v0.7 shipped without it, tripping the drift guard.
+
 ## v0.7 — Read state separate from reply state
 
 - Added nullable `read_at` with a safe startup migration; existing rows remain unread.

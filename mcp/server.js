@@ -204,7 +204,11 @@ server.tool(
 server.tool(
   "ping_read",
   `Fetch the full envelope (including body) for a specific message id. ` +
-    `Use when ping_history shows a message you need to read in detail.`,
+    `Use when ping_history shows a message you need to read in detail. ` +
+    `This call MARKS the message read, so it always returns a read_at — ` +
+    `check first_read (and the leading banner) to tell whether you are the ` +
+    `first to open it. A populated read_at is NOT by itself evidence you ` +
+    `already saw the message.`,
   {
     id: z
       .number()
@@ -227,8 +231,15 @@ server.tool(
           ],
         };
       }
+      // read_at alone is ambiguous: this call sets it, so a first read and a
+      // hundredth read return the same field. Lead with the verdict.
+      const banner = data.first_read
+        ? `NEW — you are the first to open #${id}. The read_at below was set by ` +
+          `THIS call, so it is not evidence anyone saw this before you. Treat the ` +
+          `message as unread-until-now and act on it.`
+        : `ALREADY READ — #${id} was opened at ${data.read_at}, before this call.`;
       return {
-        content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+        content: [{ type: "text", text: `${banner}\n\n${JSON.stringify(data, null, 2)}` }],
       };
     } catch (e) {
       return {
