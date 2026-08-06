@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.8 — Dispatcher-enforced pause: a paused agent cannot leak a ping
+## v0.8 — Dispatcher-enforced pause: a paused agent cannot leak a ping by accident
 
 - **Problem:** during planning sessions, agents fire pings mid-discussion —
   half-formed intent escapes and gets superseded minutes later (crossed

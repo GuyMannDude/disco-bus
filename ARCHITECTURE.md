@@ -142,9 +142,10 @@ oldest-first).
 **Trust model, stated plainly:** pause/play/release/drop ride the bus's
 existing no-auth posture — the same one that lets any localhost caller set
 `from` on a ping. `release`/`drop` check the claimed sender; `pause`/`play`
-check only that the agent exists. So "a paused agent cannot leak" is enforced
-against *accidents* (an agent whose tooling pings out of habit), not against
-an agent that deliberately POSTs `/mesh/play` at itself — that residual case
+check only that the agent exists. So the precise guarantee is: **a paused
+agent cannot leak by accident** (an agent whose tooling pings out of habit is
+held by the bus). It is NOT "a paused agent cannot leak" — an agent that
+deliberately POSTs `/mesh/play` at itself is not stopped, and that residual case
 is behavioral (spec guardrail 2: bypasses happen in the open, in chat) and
 every pause/play/release/drop is logged by the dispatcher for audit. Adding
 real caller auth is a bus-wide decision, not a pause-endpoint patch.
