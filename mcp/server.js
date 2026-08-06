@@ -128,6 +128,12 @@ server.tool(
           ],
         };
       }
+      // A HELD receipt must not read like a sent one: HELD means this agent
+      // is paused and the message was NOT delivered (dispatcher pause, v0.8).
+      const heldNote =
+        data.state === "HELD"
+          ? ` — NOT DELIVERED: you are paused; the draft is held on the dispatcher until '\\bus play' (or /mesh/release/${data.id} for a hot item, announced in the open)`
+          : "";
       return {
         content: [
           {
@@ -135,7 +141,7 @@ server.tool(
             text:
               `Ping #${data.id} accepted: ${AGENT_ID}>${to} ` +
               `subject="${subject}" state=${data.state} ` +
-              `tracking_id=${data.tracking_id}`,
+              `tracking_id=${data.tracking_id}${heldNote}`,
           },
         ],
       };

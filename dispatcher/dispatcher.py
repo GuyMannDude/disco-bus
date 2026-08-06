@@ -7,6 +7,14 @@ listeners. One uniform delivery model: every agent runs a tiny HTTP listener,
 the dispatcher POSTs envelopes directly, agents wake instantly.
 
 State machine: SENT -> DELIVERED | FAILED.
+Paused sender:  HELD -> SENT (play / release) | DROPPED (drop).
+
+Pause (IRIS phase 2, spec bus-lamp-pause-spec.md): a paused agent's pings land
+as HELD and are not delivered — enforced here, not by agent promises. HELD and
+DROPPED rows never reach listeners and are excluded from inbox views; they are
+visible via /mesh/held, /mesh/pause, and the debug surfaces (history/state/
+thread). mesh_version stays 0.5: the wire contract (ping input, delivered
+envelope) is unchanged — a flushed message is delivered as a normal SENT.
 
 Configuration:
   Listens on 127.0.0.1:9100 (override via DISCOBUS_HOST / DISCOBUS_PORT).
@@ -14,10 +22,16 @@ Configuration:
   Agent registry at ~/.disco-bus/agents.json (override via DISCOBUS_AGENTS_FILE).
 
 Routes:
-  POST /mesh/ping        accept envelope, return {id, tracking_id, state}
-  GET  /mesh/state/{id}  single envelope by id (full body)
-  GET  /mesh/history     recent envelopes (summary list)
-  GET  /healthz          liveness
+  POST /mesh/ping         accept envelope, return {id, tracking_id, state}
+  POST /mesh/pause        {agent} — hold that agent's future pings
+  POST /mesh/play         {agent} — lift pause, flush its HELD in id order
+  POST /mesh/release/{id} {agent} — send ONE held message (sender only)
+  POST /mesh/drop/{id}    {agent} — HELD -> DROPPED, never delivered (sender only)
+  GET  /mesh/pause        pause state + held counts, all agents
+  GET  /mesh/held[/{agent}] held envelopes (oldest first)
+  GET  /mesh/state/{id}   single envelope by id (full body)
+  GET  /mesh/history      recent envelopes (summary list)
+  GET  /healthz           liveness
 """
 
 import json
@@ -70,6 +84,10 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_to ON messages(to_agent, state);
 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_reply ON messages(reply_to);
+CREATE TABLE IF NOT EXISTS pauses (
+    agent TEXT PRIMARY KEY,
+    paused_at TEXT NOT NULL
+);
 """
 
 
@@ -145,6 +163,31 @@ def deliver(envelope: dict, agents: dict) -> None:
         discord_mirror.mirror(envelope)
     else:
         update_state(msg_id, "FAILED", error=f"listener {r.status_code}: {r.text[:300]}")
+
+
+def flush_held(msg_ids: list[int], agents: dict) -> None:
+    """Background thread. Deliver formerly-HELD messages ONE AT A TIME, in the
+    order given (id ASC) — a thread per message would race away the ordering
+    the spec promises ("play flushes in order"). Rows were already flipped to
+    SENT by the caller under rowcount guard, so a concurrent second play
+    cannot double-deliver."""
+    for msg_id in msg_ids:
+        conn = get_db()
+        row = conn.execute("SELECT * FROM messages WHERE id=?", (msg_id,)).fetchone()
+        conn.close()
+        if row is None:
+            continue
+        deliver(row_to_envelope(row), agents)
+
+
+def held_counts() -> dict[str, int]:
+    """HELD rows per sender."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT from_agent, COUNT(*) AS n FROM messages WHERE state='HELD' GROUP BY from_agent"
+    ).fetchall()
+    conn.close()
+    return {r["from_agent"]: r["n"] for r in rows}
 
 
 def validate_envelope_input(data, valid_agents: set) -> tuple[bool, str | None]:
@@ -257,11 +300,16 @@ class DispatcherHandler(BaseHTTPRequestHandler):
                 return self._json(
                     400, {"error": "filter must be one of: unread, unreplied, all"}
                 )
+            # Inbox never shows HELD/DROPPED: an undelivered draft is not mail,
+            # and a held one showing up unread would leak exactly what pause
+            # exists to hold back. A HELD reply likewise does not clear
+            # unreplied — the recipient has not been answered until it ships.
             conn = get_db()
             if inbox_filter == "unread":
                 rows = conn.execute(
                     """SELECT * FROM messages
                        WHERE to_agent = ? AND read_at IS NULL
+                         AND state NOT IN ('HELD','DROPPED')
                        ORDER BY id DESC LIMIT ?""",
                     (agent, limit),
                 ).fetchall()
@@ -272,18 +320,63 @@ class DispatcherHandler(BaseHTTPRequestHandler):
                 rows = conn.execute(
                     """SELECT m.* FROM messages m
                        WHERE m.to_agent = ?
+                         AND m.state NOT IN ('HELD','DROPPED')
                          AND NOT EXISTS (
                            SELECT 1 FROM messages r
                            WHERE r.reply_to = m.id
                              AND r.from_agent = ?
+                             AND r.state NOT IN ('HELD','DROPPED')
                          )
                        ORDER BY m.id DESC LIMIT ?""",
                     (agent, agent, limit),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT * FROM messages WHERE to_agent = ? ORDER BY id DESC LIMIT ?",
+                    """SELECT * FROM messages WHERE to_agent = ?
+                       AND state NOT IN ('HELD','DROPPED')
+                       ORDER BY id DESC LIMIT ?""",
                     (agent, limit),
+                ).fetchall()
+            conn.close()
+            return self._json(200, [row_to_envelope(r) for r in rows])
+
+        # /mesh/pause — pause state + held counts for every agent. "Orphaned"
+        # held rows (sender no longer paused — a crash window or a drop that
+        # never happened) are reported, not hidden: a held draft nobody is
+        # watching is the loss doctrine-loss-invisible warns about.
+        if path == "/mesh/pause":
+            conn = get_db()
+            prows = conn.execute("SELECT agent, paused_at FROM pauses ORDER BY agent").fetchall()
+            conn.close()
+            held = held_counts()
+            paused = [
+                {"agent": r["agent"], "paused_at": r["paused_at"],
+                 "held": held.get(r["agent"], 0)}
+                for r in prows
+            ]
+            paused_names = {p["agent"] for p in paused}
+            orphans = [
+                {"agent": a, "held": n}
+                for a, n in sorted(held.items()) if a not in paused_names
+            ]
+            return self._json(200, {"paused": paused, "held_orphans": orphans})
+
+        # /mesh/held or /mesh/held/<agent> — held envelopes, oldest first
+        # (the order play will flush them). Any agent may ask ("what's held?"
+        # is answerable on request, spec guardrail 4).
+        if path == "/mesh/held" or path.startswith("/mesh/held/"):
+            agent = path[len("/mesh/held/"):] if path.startswith("/mesh/held/") else ""
+            if "/" in agent:
+                return self._json(400, {"error": "invalid agent in path"})
+            conn = get_db()
+            if agent:
+                rows = conn.execute(
+                    "SELECT * FROM messages WHERE state='HELD' AND from_agent=? ORDER BY id ASC",
+                    (agent,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM messages WHERE state='HELD' ORDER BY id ASC"
                 ).fetchall()
             conn.close()
             return self._json(200, [row_to_envelope(r) for r in rows])
@@ -380,6 +473,107 @@ class DispatcherHandler(BaseHTTPRequestHandler):
             # inbox/history/state listings must not grow a meaningless field.
             return self._json(200, {**row_to_envelope(row), "first_read": first_read})
 
+        # /mesh/pause — hold every future ping FROM this agent. Idempotent;
+        # re-pausing keeps the original paused_at (the hold started then).
+        if path == "/mesh/pause":
+            agent = data.get("agent") if isinstance(data, dict) else None
+            if not isinstance(agent, str) or not agent:
+                return self._json(400, {"error": "agent is required"})
+            if agent not in load_agents():
+                return self._json(400, {"error": f"unknown agent: {agent}"})
+            conn = get_db()
+            conn.execute(
+                "INSERT OR IGNORE INTO pauses (agent, paused_at) VALUES (?, ?)",
+                (agent, now_utc()),
+            )
+            conn.commit()
+            row = conn.execute("SELECT paused_at FROM pauses WHERE agent=?", (agent,)).fetchone()
+            conn.close()
+            log.info(f"pause {agent}")
+            return self._json(200, {
+                "agent": agent, "paused": True, "paused_at": row["paused_at"],
+                "held": held_counts().get(agent, 0),
+            })
+
+        # /mesh/play — lift the pause and flush that agent's HELD in id order.
+        # Rows flip to SENT here under a rowcount guard, so a racing second
+        # play (or release) can never double-deliver; actual delivery runs in
+        # one background thread to keep the promised ordering.
+        if path == "/mesh/play":
+            agent = data.get("agent") if isinstance(data, dict) else None
+            if not isinstance(agent, str) or not agent:
+                return self._json(400, {"error": "agent is required"})
+            if agent not in load_agents():
+                return self._json(400, {"error": f"unknown agent: {agent}"})
+            conn = get_db()
+            # One IMMEDIATE transaction across delete + collect + mark: pairs
+            # with the BEGIN IMMEDIATE in /mesh/ping so a racing ping either
+            # lands before the SELECT (and flushes now) or after the commit
+            # (and sends normally) — never invisibly between (review #2
+            # finding 10).
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM pauses WHERE agent=?", (agent,))
+            held_rows = conn.execute(
+                "SELECT * FROM messages WHERE state='HELD' AND from_agent=? ORDER BY id ASC",
+                (agent,),
+            ).fetchall()
+            released = []
+            for r in held_rows:
+                cur = conn.execute(
+                    "UPDATE messages SET state='SENT' WHERE id=? AND state='HELD'",
+                    (r["id"],),
+                )
+                if cur.rowcount == 1:
+                    released.append({"id": r["id"], "tracking_id": r["tracking_id"],
+                                     "to": r["to_agent"], "subject": r["subject"]})
+            conn.commit()
+            conn.close()
+            log.info(f"play {agent}: releasing {len(released)} held")
+            if released:
+                agents = load_agents()
+                ids = [m["id"] for m in released]
+                threading.Thread(target=flush_held, args=(ids, agents), daemon=True).start()
+            return self._json(200, {"agent": agent, "paused": False, "released": released})
+
+        # /mesh/release/<id> — send ONE held message while still paused. The
+        # open path for a genuinely hot item (spec guardrail 2: announced in
+        # chat, done in the open — never a hidden bypass). Sender only.
+        # /mesh/drop/<id> — HELD -> DROPPED, never delivered. Sender only.
+        # The row stays in the DB: history is load-bearing, dropped != erased.
+        if path.startswith("/mesh/release/") or path.startswith("/mesh/drop/"):
+            action = "release" if path.startswith("/mesh/release/") else "drop"
+            try:
+                msg_id = int(path.rsplit("/", 1)[-1])
+            except ValueError:
+                return self._json(400, {"error": "invalid id"})
+            if not isinstance(data, dict) or not isinstance(data.get("agent"), str):
+                return self._json(400, {"error": "agent is required"})
+            conn = get_db()
+            row = conn.execute("SELECT * FROM messages WHERE id=?", (msg_id,)).fetchone()
+            if not row:
+                conn.close()
+                return self._json(404, {"error": "not found"})
+            if row["from_agent"] != data["agent"]:
+                conn.close()
+                return self._json(403, {"error": f"only the sender can {action} a held message"})
+            new_state = "SENT" if action == "release" else "DROPPED"
+            cur = conn.execute(
+                "UPDATE messages SET state=? WHERE id=? AND state='HELD'",
+                (new_state, msg_id),
+            )
+            conn.commit()
+            if cur.rowcount != 1:
+                conn.close()
+                return self._json(409, {"error": f"message is not HELD (state={row['state']})"})
+            row = conn.execute("SELECT * FROM messages WHERE id=?", (msg_id,)).fetchone()
+            conn.close()
+            log.info(f"{action} #{msg_id} by {data['agent']}")
+            if action == "release":
+                threading.Thread(
+                    target=flush_held, args=([msg_id], load_agents()), daemon=True
+                ).start()
+            return self._json(200, row_to_envelope(row))
+
         if path != "/mesh/ping":
             return self._json(404, {"error": "not found"})
 
@@ -395,11 +589,23 @@ class DispatcherHandler(BaseHTTPRequestHandler):
         created_at = now_utc()
         body_json = json.dumps(data["body"])
         conn = get_db()
+        # Pause is enforced HERE. BEGIN IMMEDIATE makes pause-check + insert
+        # one atomic unit against /mesh/play's delete-and-flush transaction:
+        # without it, a ping racing a play could commit a HELD row after play
+        # already collected its flush set — an orphan play just reported as
+        # fully flushed (review 2026-08-06 #2 finding 10). The bus holds it,
+        # promises don't (spec guardrail: "enforced by the bus, not by
+        # promises").
+        conn.execute("BEGIN IMMEDIATE")
+        paused = conn.execute(
+            "SELECT 1 FROM pauses WHERE agent=?", (data["from"],)
+        ).fetchone() is not None
+        state = "HELD" if paused else "SENT"
         cur = conn.execute(
             """INSERT INTO messages
                (mesh_version, tracking_id, from_agent, to_agent, reply_to,
                 subject, body, state, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'SENT', ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 MESH_VERSION,
                 "pending",
@@ -408,6 +614,7 @@ class DispatcherHandler(BaseHTTPRequestHandler):
                 data.get("reply_to"),
                 data["subject"],
                 body_json,
+                state,
                 created_at,
             ),
         )
@@ -417,6 +624,10 @@ class DispatcherHandler(BaseHTTPRequestHandler):
         conn.execute("UPDATE messages SET tracking_id=? WHERE id=?", (tracking_id, msg_id))
         conn.commit()
         conn.close()
+
+        if paused:
+            log.info(f"#{msg_id} HELD ({data['from']} is paused)")
+            return self._json(202, {"id": msg_id, "tracking_id": tracking_id, "state": "HELD"})
 
         envelope = {
             "mesh_version": MESH_VERSION,

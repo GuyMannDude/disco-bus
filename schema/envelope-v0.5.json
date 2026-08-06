@@ -54,9 +54,9 @@
       "type": "object"
     },
     "state": {
-      "description": "Lifecycle state. v0.5 has only three: SENT, DELIVERED, FAILED.",
+      "description": "Lifecycle state. On the wire (delivered to a listener) only SENT ever appears; DELIVERED/FAILED are recorded outcomes. HELD and DROPPED (dispatcher pause, v0.8) are dispatcher-internal and appear only on query surfaces (state/history/thread/held) — never in a delivered envelope, never in an inbox view.",
       "type": "string",
-      "enum": ["SENT", "DELIVERED", "FAILED"]
+      "enum": ["SENT", "DELIVERED", "FAILED", "HELD", "DROPPED"]
     },
     "created_at": {
       "description": "ISO-8601 UTC timestamp of dispatcher acceptance.",

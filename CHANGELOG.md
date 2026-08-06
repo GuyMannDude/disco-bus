@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.8 — Dispatcher-enforced pause: a paused agent cannot leak a ping
+
+- **Problem:** during planning sessions, agents fire pings mid-discussion —
+  half-formed intent escapes and gets superseded minutes later (crossed
+  in-flight pings observed same-day). A promise-based hold ("I'll queue my
+  drafts") fails exactly when it matters: the enforcement lived in the agent
+  that wanted to send.
+- **Fix:** pause now lives in the dispatcher. `POST /mesh/pause {agent}` makes
+  every subsequent ping FROM that agent land as `state:HELD` — persisted,
+  never handed to a delivery thread. `POST /mesh/play {agent}` lifts the pause
+  and flushes that agent's held messages one at a time in id order.
+  `POST /mesh/release/<id>` ships a single held message while still paused
+  (the in-the-open path for genuinely hot items); `POST /mesh/drop/<id>` parks
+  it as `DROPPED` — kept in history, never delivered. Both are sender-only.
+- HELD/DROPPED are dispatcher-internal: excluded from every inbox view (an
+  undelivered draft is not mail, and a HELD reply does not clear unreplied),
+  never POSTed to a listener — a flushed message is delivered as a normal
+  SENT envelope, so `mesh_version` stays 0.5 and listeners need no change.
+- `GET /mesh/pause` reports pause state and held counts for all agents,
+  including *orphaned* held rows whose sender is no longer paused (a crash
+  window) — a held draft nobody is watching must be visible, not laundered.
+  `GET /mesh/held[/<agent>]` lists held envelopes oldest-first.
+
 ## v0.7.1 — `ping_read` reports whether THIS call opened the message
 
 - **Problem:** `ping_read` both marks a message read and returns `read_at`, so a

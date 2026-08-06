@@ -11,9 +11,9 @@
 
   "name": "Disco-Bus",
   "tagline": "Push-based agent-to-agent message mesh. Tiny (~1000 LOC), push-not-poll, MCP-ready, optional Discord mirror.",
-  "summary": "Disco-Bus is a lightweight message dispatcher that lets AI agents send and receive direct messages without polling. Each agent gets a persistent listener on a dedicated port; the dispatcher pushes envelopes on arrival and wakes the listener immediately. Messages are stored in SQLite with a three-state machine (SENT → DELIVERED → FAILED). Optional Discord mirroring lets humans observe all traffic in a channel. Five MCP tools (ping, ping_history, ping_read, inbox, thread) give any MCP-capable agent full send/receive/inspect capability. ~1000 lines of Python + Node, no message broker required.",
+  "summary": "Disco-Bus is a lightweight message dispatcher that lets AI agents send and receive direct messages without polling. Each agent gets a persistent listener on a dedicated port; the dispatcher pushes envelopes on arrival and wakes the listener immediately. Messages are stored in SQLite with a five-state machine (SENT → DELIVERED | FAILED; paused senders: HELD → SENT | DROPPED). Optional Discord mirroring lets humans observe all traffic in a channel. Five MCP tools (ping, ping_history, ping_read, inbox, thread) give any MCP-capable agent full send/receive/inspect capability. ~1000 lines of Python + Node, no message broker required.",
   "backstory": "Before Disco-Bus, Guy was the message bus. He'd copy Opie's output, paste it into CC's terminal, then copy CC's reply back to Opie. From his phone, this was impossible. Disco-Bus was built so agents could send structured messages to each other with full payloads, tracked delivery, and threaded replies — all stored in SQLite and mirrored to Discord so Guy could see every message from his phone. The name: Discord + Bus. The pitch: run your AI assembly line from your couch.",
-  "version": "0.7.1",
+  "version": "0.8",
   "license": "MIT",
   "homepage": "https://projectsparks.ai/disco-bus",
   "source": "https://github.com/GuyMannDude/disco-bus",
@@ -24,6 +24,7 @@
     "Push-based delivery — dispatcher pushes to a per-agent listener port immediately on receipt. No agent polling required.",
     "Persistent envelope store — SQLite WAL, concurrent reads don't block delivery writes.",
     "Three-state delivery machine — SENT → DELIVERED → FAILED. State queryable via REST or MCP.",
+    "Dispatcher-enforced pause — POST /mesh/pause holds every future ping from an agent as HELD (never delivered, invisible to inboxes); /mesh/play flushes in id order; /mesh/release and /mesh/drop handle single held messages (sender-only).",
     "Inbox API — GET /mesh/inbox/<agent>?unread_only=true. Unread = no reply from recipient (derived, no schema change).",
     "Thread walk — GET /mesh/thread/<id> walks reply_to back to root via recursive CTE, returns full conversation in order.",
     "Body size enforcement — DISCOBUS_MAX_BODY_BYTES env (default 1 MiB) rejects oversized payloads at the boundary.",
@@ -44,7 +45,13 @@
         {"path": "/mesh/state/<id>", "method": "GET", "purpose": "Query delivery state for a message by id."},
         {"path": "/mesh/history", "method": "GET", "purpose": "Recent envelope history, newest first. ?limit= supported."},
         {"path": "/mesh/inbox/<agent>", "method": "GET", "purpose": "All messages addressed to agent. ?unread_only=true filters to messages with no reply from recipient."},
-        {"path": "/mesh/thread/<id>", "method": "GET", "purpose": "Full conversation thread rooted at any message id in the chain. Returns {root_id, messages:[...]} in order."}
+        {"path": "/mesh/thread/<id>", "method": "GET", "purpose": "Full conversation thread rooted at any message id in the chain. Returns {root_id, messages:[...]} in order."},
+        {"path": "/mesh/pause", "method": "POST", "purpose": "Hold every future ping FROM {agent} as state=HELD (dispatcher-enforced, idempotent)."},
+        {"path": "/mesh/play", "method": "POST", "purpose": "Lift {agent}'s pause and flush its HELD messages one at a time in id order."},
+        {"path": "/mesh/release/<id>", "method": "POST", "purpose": "Send ONE held message while still paused. Sender-only."},
+        {"path": "/mesh/drop/<id>", "method": "POST", "purpose": "HELD -> DROPPED: never delivered, kept in history. Sender-only."},
+        {"path": "/mesh/pause", "method": "GET", "purpose": "Pause state + held counts for all agents, including orphaned held rows whose sender is no longer paused."},
+        {"path": "/mesh/held/<agent>", "method": "GET", "purpose": "Held envelopes oldest-first (flush order). Omit <agent> for all."}
       ]
     },
     "mcp_tools": [

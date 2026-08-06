@@ -116,6 +116,39 @@ Beyond `GET /mesh/state/<id>` and `GET /mesh/history`, the dispatcher offers two
 - `POST /mesh/read/<id>` — recipient-bound read used by `ping_read`. It sets `read_at` only when null and returns the full envelope. Inbox, history, thread, and raw state reads never mark a message read.
 - `GET /mesh/thread/<id>` — walks `reply_to` back to the root, then a recursive CTE collects every descendant. Returns `{root_id, messages: [...]}` in chronological order. Useful for catching up on context before responding to anything.
 
+## Pause / play (v0.8)
+
+A human planning with an agent can hold that agent's outbound traffic **in the
+dispatcher** — enforcement, not etiquette. `POST /mesh/pause {agent}` inserts a
+row in the `pauses` table; from then on every `/mesh/ping` FROM that agent is
+persisted as `state=HELD` and never handed to a delivery thread. The sender
+keeps refining: send a better version, `POST /mesh/drop/<id>` the stale one
+(HELD → DROPPED, kept in history, never delivered), or `POST /mesh/release/<id>`
+to ship a single hot item while still paused. `POST /mesh/play {agent}` deletes
+the pause row and flushes the agent's HELD messages one at a time in id order —
+sequenced in a single thread precisely so "flushes in order" is a property, not
+a hope.
+
+HELD and DROPPED are dispatcher-internal states. They are excluded from every
+`/mesh/inbox` view (an undelivered draft is not mail, and a HELD reply does not
+clear `unreplied`) and never appear on the wire — a flushed message is delivered
+as an ordinary SENT envelope, which is why `mesh_version` stays 0.5. They remain
+visible in `state`/`history`/`thread` (history is load-bearing) and in the two
+dedicated views: `GET /mesh/pause` (pause state + held counts for all agents,
+including orphaned held rows whose sender is no longer paused — a crash window
+that must stay visible) and `GET /mesh/held[/<agent>]` (held envelopes,
+oldest-first).
+
+**Trust model, stated plainly:** pause/play/release/drop ride the bus's
+existing no-auth posture — the same one that lets any localhost caller set
+`from` on a ping. `release`/`drop` check the claimed sender; `pause`/`play`
+check only that the agent exists. So "a paused agent cannot leak" is enforced
+against *accidents* (an agent whose tooling pings out of habit), not against
+an agent that deliberately POSTs `/mesh/play` at itself — that residual case
+is behavioral (spec guardrail 2: bypasses happen in the open, in chat) and
+every pause/play/release/drop is logged by the dispatcher for audit. Adding
+real caller auth is a bus-wide decision, not a pause-endpoint patch.
+
 The listing/thread endpoints are read-only; only the explicit recipient read endpoint mutates `read_at`. SQLite indexes keep the reply-chain and inbox queries cheap.
 
 ## Where to extend
