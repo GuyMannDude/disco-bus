@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.10 — Clearing the digests, without burying the one letter that mattered
+
+- **Problem:** v0.9 made the unread count honest and the honest number was 710
+  for Opie, 118 for Rocky. Roughly a third of it is machine-generated digests —
+  sec-watch, brain-drift, liveness probes, dream reports — which nobody reads
+  individually and which had made the count itself meaningless. Clearing them by
+  hand is not work anyone will do.
+- **Fix:** `dispatcher/bulk_mark_read.py`. Dry run by default; `--apply` writes.
+  A message is marked read only if its subject **starts with** a pattern in an
+  explicit `FAMILIES` allowlist, and only if it predates `--before`. There is no
+  "mark everything" mode.
+- **Why anchored matching, specifically:** the first draft of the classifier used
+  unanchored substrings (`%cron%`, `%daily%`, `%nightly%`, `%closeout%`). Run
+  against the real backlog it swept six authored messages, among them
+  `key-rotation-done-not-just-the-crontab`. That is the same failure the tool
+  exists to prevent — v0.9 was found because an unopened chain contained a revoke
+  instruction addressed to Guy. Those six subjects are now the fixtures in
+  `test_bulk_mark_read.py`, and the suite was proven to FAIL against the loose
+  classifier before it was allowed to pass against the anchored one.
+- **`:critical:` is carved out** of the sweep even though it matches a family. The
+  purpose of clearing digests is to make the unread count mean something again;
+  an unopened critical security digest is what that count should still point at.
+- **Result:** Opie 710 → 491 unread (29% → 51% read), Rocky 118 → 85 (59% → 71%).
+  Nothing human-authored was touched.
+
 ## v0.9 — The inbox reported its page size as a count, so a cap read as a measurement
 
 - **Problem:** `GET /mesh/inbox/<agent>` returned a bare array and the MCP tool
