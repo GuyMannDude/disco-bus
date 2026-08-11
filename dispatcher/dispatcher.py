@@ -235,11 +235,13 @@ def row_to_envelope(row) -> dict:
 
 
 class DispatcherHandler(BaseHTTPRequestHandler):
-    def _json(self, status: int, payload) -> None:
+    def _json(self, status: int, payload, headers: dict | None = None) -> None:
         body = json.dumps(payload).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, str(value))
         self.end_headers()
         self.wfile.write(body)
 
@@ -304,21 +306,21 @@ class DispatcherHandler(BaseHTTPRequestHandler):
             # and a held one showing up unread would leak exactly what pause
             # exists to hold back. A HELD reply likewise does not clear
             # unreplied — the recipient has not been answered until it ships.
-            conn = get_db()
+            # The page and the total MUST come from one predicate. Two copies of
+            # this WHERE clause is how a count starts disagreeing with the rows it
+            # claims to count -- and a listing that miscounts is worse than one
+            # that does not count at all (Opie #2339: a capped page read as a
+            # total, reported to Guy as a measurement for three days).
             if inbox_filter == "unread":
-                rows = conn.execute(
-                    """SELECT * FROM messages
-                       WHERE to_agent = ? AND read_at IS NULL
-                         AND state NOT IN ('HELD','DROPPED')
-                       ORDER BY id DESC LIMIT ?""",
-                    (agent, limit),
-                ).fetchall()
+                from_where = """FROM messages m
+                       WHERE m.to_agent = ? AND m.read_at IS NULL
+                         AND m.state NOT IN ('HELD','DROPPED')"""
+                params = (agent,)
             elif inbox_filter == "unreplied":
                 # Messages addressed to <agent> that have no reply *from* that
                 # agent. A "reply" is any row whose reply_to == m.id and
                 # from_agent == <agent>.
-                rows = conn.execute(
-                    """SELECT m.* FROM messages m
+                from_where = """FROM messages m
                        WHERE m.to_agent = ?
                          AND m.state NOT IN ('HELD','DROPPED')
                          AND NOT EXISTS (
@@ -326,19 +328,36 @@ class DispatcherHandler(BaseHTTPRequestHandler):
                            WHERE r.reply_to = m.id
                              AND r.from_agent = ?
                              AND r.state NOT IN ('HELD','DROPPED')
-                         )
-                       ORDER BY m.id DESC LIMIT ?""",
-                    (agent, agent, limit),
-                ).fetchall()
+                         )"""
+                params = (agent, agent)
             else:
-                rows = conn.execute(
-                    """SELECT * FROM messages WHERE to_agent = ?
-                       AND state NOT IN ('HELD','DROPPED')
-                       ORDER BY id DESC LIMIT ?""",
-                    (agent, limit),
-                ).fetchall()
+                from_where = """FROM messages m
+                       WHERE m.to_agent = ?
+                         AND m.state NOT IN ('HELD','DROPPED')"""
+                params = (agent,)
+
+            conn = get_db()
+            rows = conn.execute(
+                f"SELECT m.* {from_where} ORDER BY m.id DESC LIMIT ?",
+                (*params, limit),
+            ).fetchall()
+            # COUNT over the same predicate, WITHOUT the limit. This is the whole
+            # point: `len(rows)` can only ever report the page size.
+            total = conn.execute(f"SELECT COUNT(*) {from_where}", params).fetchone()[0]
             conn.close()
-            return self._json(200, [row_to_envelope(r) for r in rows])
+            # Carried as headers, not body fields: the body stays a bare array so
+            # every existing consumer (listeners, tests, the MCP bridge) is
+            # untouched, and the comment at /mesh/read still holds -- these
+            # describe the call, not the rows.
+            return self._json(
+                200,
+                [row_to_envelope(r) for r in rows],
+                headers={
+                    "X-Inbox-Total": total,
+                    "X-Inbox-Returned": len(rows),
+                    "X-Inbox-Truncated": "true" if total > len(rows) else "false",
+                },
+            )
 
         # /mesh/pause — pause state + held counts for every agent. "Orphaned"
         # held rows (sender no longer paused — a crash window or a drop that

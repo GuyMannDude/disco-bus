@@ -311,7 +311,24 @@ server.tool(
           `reply_to=${m.reply_to ?? "null"} subject=${JSON.stringify(m.subject)}`
       );
       const label = filter || (unread_only ? "unreplied" : "all");
-      const header = `Inbox for ${target} (${label}) — ${data.length} message(s):`;
+      // `data.length` is the PAGE SIZE, and printing it as the count is how a cap
+      // gets read as a measurement (Opie #2339). Prefer the dispatcher's real
+      // total; when an older dispatcher does not send one, say "at least" rather
+      // than quietly asserting a number we cannot know.
+      const total = Number(r.headers.get("x-inbox-total"));
+      const truncated = r.headers.get("x-inbox-truncated") === "true";
+      let count;
+      if (Number.isFinite(total) && r.headers.get("x-inbox-total") !== null) {
+        count = truncated
+          ? `${data.length} of ${total} message(s) — TRUNCATED, ${total - data.length} not shown (raise limit)`
+          : `${total} message(s)`;
+      } else {
+        count =
+          data.length === limit
+            ? `at least ${data.length} message(s) — page is FULL, total unknown (dispatcher predates X-Inbox-Total)`
+            : `${data.length} message(s)`;
+      }
+      const header = `Inbox for ${target} (${label}) — ${count}:`;
       return {
         content: [
           {

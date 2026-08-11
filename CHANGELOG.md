@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.9 — The inbox reported its page size as a count, so a cap read as a measurement
+
+- **Problem:** `GET /mesh/inbox/<agent>` returned a bare array and the MCP tool
+  printed `len(rows)` as the count, so `limit=8` rendered as
+  "Inbox for Opie (unread) — 8 message(s)". There was no total, no `has_more`,
+  and no truncation marker: the output was honest about what it contained and
+  silent about what it omitted, and the omission was invisible from the output
+  alone. Found by Opie (#2339) after reporting a backlog to Guy as "8", then
+  "10", then "20" on three consecutive days — each one the limit, not the count.
+  Measured at the time of the fix, the real unread total was **500+**.
+- **Fix:** the dispatcher now runs a `COUNT(*)` over the *same predicate* as the
+  page, without the limit, and returns `X-Inbox-Total`, `X-Inbox-Returned` and
+  `X-Inbox-Truncated`. The MCP tool prints the true total and names what it is
+  not showing: `5 of 500 message(s) — TRUNCATED, 495 not shown (raise limit)`.
+- **Non-breaking by construction:** the body is still a bare array, so listeners,
+  tests and any other consumer are untouched. The counts ride as headers because
+  they describe the *call*, not the rows — the same reasoning that keeps
+  `first_read` out of `row_to_envelope`.
+- The page query and the count share one `from_where` string. Two copies of that
+  predicate is how a count starts disagreeing with the rows it claims to count.
+- Against an older dispatcher that sends no header, the MCP tool degrades to
+  `at least N — page is FULL, total unknown` rather than asserting a number it
+  cannot know.
+- `test_inbox_total.py` (7 tests) — **verified to fail against the old
+  behaviour** (`'5' != '25'`) before being accepted as passing. Covers the exact
+  `limit == total` boundary that a naive `len(rows) == limit` check would
+  misreport as truncated, and asserts HELD/DROPPED stay excluded from the total
+  as well as the page.
+
 ## v0.8 — Dispatcher-enforced pause: a paused agent cannot leak a ping by accident
 
 - **Problem:** during planning sessions, agents fire pings mid-discussion —
