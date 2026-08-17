@@ -118,6 +118,22 @@ def load_agents() -> dict:
         return json.load(f)
 
 
+def canonical_agent(name: str, agents: dict) -> str | None:
+    """Registry name for a caller-supplied agent, matched case-insensitively.
+
+    None = unknown, and the caller MUST error loudly, never proceed. Born
+    2026-08-17: post-reset Dave asked for inbox agent='dave' and got a
+    SUCCESSFUL EMPTY inbox for an agent that does not exist — a green answer
+    to a question about nobody (snag-dave-inbox-enumeration-blind). An
+    ambiguous match (two registry names differing only by case) is treated
+    as unknown rather than guessed.
+    """
+    if name in agents:
+        return name
+    matches = [a for a in agents if a.lower() == name.lower()]
+    return matches[0] if len(matches) == 1 else None
+
+
 def now_utc():
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -288,6 +304,17 @@ class DispatcherHandler(BaseHTTPRequestHandler):
             agent = path[len("/mesh/inbox/"):]
             if not agent or "/" in agent:
                 return self._json(400, {"error": "invalid agent in path"})
+            # Unknown agent = loud 404, never an empty 200. An empty inbox
+            # and a nonexistent inbox must be distinguishable (the Dave
+            # incident above); matching is case-insensitive so 'dave' reads
+            # Dave's mail instead of nobody's.
+            registry = load_agents()
+            canon = canonical_agent(agent, registry)
+            if canon is None:
+                return self._json(404, {
+                    "error": f"unknown agent: {agent} (registry: {sorted(registry)})"
+                })
+            agent = canon
             qs = urllib.parse.parse_qs(parsed.query)
             try:
                 limit = int(qs.get("limit", [INBOX_LIMIT_DEFAULT])[0])
@@ -465,12 +492,17 @@ class DispatcherHandler(BaseHTTPRequestHandler):
                 return self._json(400, {"error": "invalid id"})
             if not isinstance(data, dict) or not isinstance(data.get("agent"), str):
                 return self._json(400, {"error": "agent is required"})
+            # Canonicalize before the recipient check: a case-mangled name must
+            # get "unknown agent", not a misleading "only the recipient" 403.
+            reader = canonical_agent(data["agent"], load_agents())
+            if reader is None:
+                return self._json(400, {"error": f"unknown agent: {data['agent']}"})
             conn = get_db()
             row = conn.execute("SELECT * FROM messages WHERE id=?", (msg_id,)).fetchone()
             if not row:
                 conn.close()
                 return self._json(404, {"error": "not found"})
-            if row["to_agent"] != data["agent"]:
+            if row["to_agent"] != reader:
                 conn.close()
                 return self._json(403, {"error": "only the recipient can mark this message read"})
             # first_read tells the caller whether THIS call opened the message.
@@ -498,8 +530,10 @@ class DispatcherHandler(BaseHTTPRequestHandler):
             agent = data.get("agent") if isinstance(data, dict) else None
             if not isinstance(agent, str) or not agent:
                 return self._json(400, {"error": "agent is required"})
-            if agent not in load_agents():
+            canon = canonical_agent(agent, load_agents())
+            if canon is None:
                 return self._json(400, {"error": f"unknown agent: {agent}"})
+            agent = canon
             conn = get_db()
             conn.execute(
                 "INSERT OR IGNORE INTO pauses (agent, paused_at) VALUES (?, ?)",
@@ -522,8 +556,10 @@ class DispatcherHandler(BaseHTTPRequestHandler):
             agent = data.get("agent") if isinstance(data, dict) else None
             if not isinstance(agent, str) or not agent:
                 return self._json(400, {"error": "agent is required"})
-            if agent not in load_agents():
+            canon = canonical_agent(agent, load_agents())
+            if canon is None:
                 return self._json(400, {"error": f"unknown agent: {agent}"})
+            agent = canon
             conn = get_db()
             # One IMMEDIATE transaction across delete + collect + mark: pairs
             # with the BEGIN IMMEDIATE in /mesh/ping so a racing ping either
