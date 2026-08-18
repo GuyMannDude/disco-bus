@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.11 — The eye now sees the mail that died
+
+- **Problem:** a delivery the dispatcher could not complete went `state=FAILED`
+  in the DB and told nobody — the sender's 202 "SENT" is emitted before the
+  background delivery thread runs, IRIS counted only unread DELIVERED mail, and
+  no cron watched the column. 35 historical FAILED rows, every one silent.
+  Found by Guy asking the operator question: "How will I know if delivery
+  fails?" (S239, snag-bus-failed-delivery-invisible).
+- **Fix:** read-only `GET /mesh/failed?since_id=N&limit=M` — FAILED rows with
+  id > N, oldest first. Consumer is the IRIS poller: red FAILED badge +
+  `from→to #id` panel rows, persistent until `iris-ctl ack-failed` moves the
+  watermark (`~/.sparks/iris/failed-ack.json`). Historical 35 acked at deploy;
+  live-fired with a deliberate ping to down Cliff (#2725): FAILED → badge →
+  ack → clear, all verified. mesh_version stays 0.5 — wire contract unchanged,
+  the endpoint is additive.
+
 ## v0.10 — Clearing the digests, without burying the one letter that mattered
 
 - **Problem:** v0.9 made the unread count honest and the honest number was 710

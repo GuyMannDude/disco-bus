@@ -283,6 +283,26 @@ class DispatcherHandler(BaseHTTPRequestHandler):
                 return self._json(404, {"error": "not found"})
             return self._json(200, row_to_envelope(row))
 
+        # /mesh/failed?since_id=N — FAILED deliveries with id > N, oldest first.
+        # Read-only consumer surface (IRIS failed-delivery watch, S239): a
+        # FAILED row was invisible to everyone including the sender, who only
+        # ever saw the pre-delivery "SENT" 202 (snag-bus-failed-delivery-invisible).
+        if path == "/mesh/failed":
+            qs = urllib.parse.parse_qs(parsed.query)
+            try:
+                since_id = int(qs.get("since_id", ["0"])[0])
+                limit = int(qs.get("limit", [HISTORY_LIMIT_DEFAULT])[0])
+            except ValueError:
+                return self._json(400, {"error": "invalid since_id or limit"})
+            limit = max(1, min(limit, HISTORY_LIMIT_MAX))
+            conn = get_db()
+            rows = conn.execute(
+                "SELECT * FROM messages WHERE state='FAILED' AND id>? ORDER BY id ASC LIMIT ?",
+                (since_id, limit),
+            ).fetchall()
+            conn.close()
+            return self._json(200, [row_to_envelope(r) for r in rows])
+
         if path == "/mesh/history":
             qs = urllib.parse.parse_qs(parsed.query)
             try:
