@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.12 — Swept is not read
+
+- **Problem:** Opie's unread stood at 488 and near-all of it was stale — daily
+  green digests plus months of authored ship-notices consumed via subject
+  listings but never opened (Opie #2835). v0.10's sweep could not drain it
+  honestly: it stamps `read_at`, which claims the recipient opened mail nobody
+  read, and it refuses authored subjects entirely. Opie declined to run it for
+  exactly that reason: the read flag is the only evidence trail of what was
+  actually seen.
+- **Fix:** two new columns, `cleared_at` + `cleared_reason` (migration in
+  `init_db`, additive; mesh_version stays 0.5). `bulk_mark_read.py` now stamps
+  those and never touches `read_at` — the audit record says "swept, unread".
+  The dispatcher's `filter=unread` excludes cleared rows; envelopes carry both
+  new fields. New `--include-authored` flag sweeps ALL unread before the date
+  for a deliberate backlog drain; `:critical:` subjects are still never swept,
+  and the family-anchored mode stays the default. `mnemo-wedge-watch-` joined
+  the families. Companion change outside this repo: wedge-watch and
+  cronalarm-report green days now append to `~/.sparks/green-digest.jsonl`
+  instead of addressing Opie at all — only non-clean results get a reader.
+
 ## v0.11 — The eye now sees the mail that died
 
 - **Problem:** a delivery the dispatcher could not complete went `state=FAILED`

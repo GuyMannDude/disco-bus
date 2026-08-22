@@ -284,7 +284,7 @@ server.tool(
       .enum(["unread", "unreplied", "all"])
       .optional()
       .describe(
-        'Inbox filter. "unread" checks read_at; "unreplied" checks reply chains; "all" applies no filter.'
+        'Inbox filter. "unread" = not opened AND not bulk-cleared (cleared_at); "unreplied" checks reply chains; "all" applies no filter.'
       ),
   },
   async ({ agent, limit, unread_only, filter }) => {

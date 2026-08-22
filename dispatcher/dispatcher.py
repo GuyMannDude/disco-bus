@@ -79,7 +79,9 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at TEXT NOT NULL,
     delivered_at TEXT,
     delivery_error TEXT,
-    read_at TEXT
+    read_at TEXT,
+    cleared_at TEXT,
+    cleared_reason TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_to ON messages(to_agent, state);
 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
@@ -100,6 +102,16 @@ def init_db():
     columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
     if "read_at" not in columns:
         conn.execute("ALTER TABLE messages ADD COLUMN read_at TEXT")
+    # Bulk-clear audit trail (Opie #2835): a swept message must never be
+    # mistaken for one somebody opened. cleared_at/cleared_reason say "swept,
+    # unread"; read_at stays NULL and keeps meaning what it says.
+    # One guard PER column: ALTERs autocommit independently, so a crash between
+    # them must not leave a state the migration can never repair — a missing
+    # cleared_reason would IndexError row_to_envelope on every endpoint.
+    if "cleared_at" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN cleared_at TEXT")
+    if "cleared_reason" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN cleared_reason TEXT")
     conn.commit()
     conn.close()
 
@@ -247,6 +259,8 @@ def row_to_envelope(row) -> dict:
         "delivered_at": row["delivered_at"],
         "delivery_error": row["delivery_error"],
         "read_at": row["read_at"],
+        "cleared_at": row["cleared_at"],
+        "cleared_reason": row["cleared_reason"],
     }
 
 
@@ -359,16 +373,26 @@ class DispatcherHandler(BaseHTTPRequestHandler):
             # that does not count at all (Opie #2339: a capped page read as a
             # total, reported to Guy as a measurement for three days).
             if inbox_filter == "unread":
+                # cleared_at IS NULL: a bulk-swept message (Opie #2835) is no
+                # longer *pending* — it leaves the unread view — but its
+                # read_at stays NULL forever: nobody opened it, and the
+                # envelope says so.
                 from_where = """FROM messages m
                        WHERE m.to_agent = ? AND m.read_at IS NULL
+                         AND m.cleared_at IS NULL
                          AND m.state NOT IN ('HELD','DROPPED')"""
                 params = (agent,)
             elif inbox_filter == "unreplied":
                 # Messages addressed to <agent> that have no reply *from* that
                 # agent. A "reply" is any row whose reply_to == m.id and
-                # from_agent == <agent>.
+                # from_agent == <agent>. Bulk-cleared rows leave this view too
+                # (Opie #2835): cleared means "swept, no action pending", and
+                # nobody ever replies to an automated digest — without this the
+                # drain never reaches the legacy unread_only=true path, which
+                # maps here.
                 from_where = """FROM messages m
                        WHERE m.to_agent = ?
+                         AND m.cleared_at IS NULL
                          AND m.state NOT IN ('HELD','DROPPED')
                          AND NOT EXISTS (
                            SELECT 1 FROM messages r

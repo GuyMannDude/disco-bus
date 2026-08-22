@@ -44,13 +44,17 @@ class BulkMarkReadTest(unittest.TestCase):
             """CREATE TABLE messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 from_agent TEXT NOT NULL, to_agent TEXT NOT NULL,
-                subject TEXT NOT NULL, created_at TEXT NOT NULL, read_at TEXT)"""
+                subject TEXT NOT NULL, created_at TEXT NOT NULL, read_at TEXT,
+                cleared_at TEXT, cleared_reason TEXT,
+                state TEXT NOT NULL DEFAULT 'DELIVERED')"""
         )
 
-    def add(self, subject, to_agent="Opie", created_at="2026-07-01T00:00:00Z", read_at=None):
+    def add(self, subject, to_agent="Opie", created_at="2026-07-01T00:00:00Z", read_at=None,
+            state="DELIVERED"):
         cur = self.conn.execute(
-            "INSERT INTO messages (from_agent, to_agent, subject, created_at, read_at) VALUES ('CC',?,?,?,?)",
-            (to_agent, subject, created_at, read_at),
+            "INSERT INTO messages (from_agent, to_agent, subject, created_at, read_at, state) "
+            "VALUES ('CC',?,?,?,?,?)",
+            (to_agent, subject, created_at, read_at, state),
         )
         self.conn.commit()
         return cur.lastrowid
@@ -89,6 +93,69 @@ class BulkMarkReadTest(unittest.TestCase):
     def test_family_of_returns_none_for_authored(self):
         for subject in HUMAN_AUTHORED:
             self.assertIsNone(bulk_mark_read.family_of(subject), subject)
+
+    def test_wedge_watch_reports_are_matched(self):
+        self.add("mnemo-wedge-watch-2026-08-10-clean")
+        self.assertEqual(self.matched_subjects(), {"mnemo-wedge-watch-2026-08-10-clean"})
+
+    def test_clear_stamps_cleared_not_read(self):
+        # Opie #2835: a swept message must never claim it was opened.
+        msg_id = self.add("cronalarm-daily-report-2026-07-27-all-clear")
+        rows = bulk_mark_read.matching_rows(self.conn, "Opie", "2026-08-04")
+        bulk_mark_read.clear(self.conn, rows)
+        row = self.conn.execute("SELECT * FROM messages WHERE id=?", (msg_id,)).fetchone()
+        self.assertIsNone(row["read_at"])
+        self.assertIsNotNone(row["cleared_at"])
+        self.assertEqual(row["cleared_reason"], "bulk")
+
+    def test_include_authored_sweeps_authored_mail(self):
+        for subject in HUMAN_AUTHORED:
+            self.add(subject)
+        rows = bulk_mark_read.matching_rows(self.conn, "Opie", "2026-08-04",
+                                            include_authored=True)
+        self.assertEqual({r["subject"] for r in rows}, set(HUMAN_AUTHORED))
+
+    def test_include_authored_still_never_sweeps_critical(self):
+        self.add("sec-watch:critical: PyPI package 'fastapi' compromised")
+        rows = bulk_mark_read.matching_rows(self.conn, "Opie", "2026-08-04",
+                                            include_authored=True)
+        self.assertEqual(rows, [])
+
+    def test_include_authored_respects_before_date_and_read_state(self):
+        self.add("old-authored-note", created_at="2026-07-01T00:00:00Z")
+        self.add("new-authored-note", created_at="2026-08-05T00:00:00Z")
+        self.add("already-read-note", created_at="2026-07-01T00:00:00Z",
+                 read_at="2026-07-02T00:00:00Z")
+        rows = bulk_mark_read.matching_rows(self.conn, "Opie", "2026-08-04",
+                                            include_authored=True)
+        self.assertEqual({r["subject"] for r in rows}, {"old-authored-note"})
+
+    def test_held_and_dropped_are_never_swept(self):
+        # A HELD row is an undelivered draft; sweeping it would make it
+        # invisible in every pending view after /mesh/release delivers it.
+        self.add("igor-brain-drift-detected", state="HELD")
+        self.add("some-authored-draft", state="HELD")
+        self.add("cronalarm-daily-report-2026-07-27-all-clear", state="DROPPED")
+        self.assertEqual(self.matched_subjects(), set())
+        rows = bulk_mark_read.matching_rows(self.conn, "Opie", "2026-08-04",
+                                            include_authored=True)
+        self.assertEqual(rows, [])
+
+    def test_include_authored_skips_already_cleared(self):
+        self.add("old-authored-note", created_at="2026-07-01T00:00:00Z")
+        rows = bulk_mark_read.matching_rows(self.conn, "Opie", "2026-08-04",
+                                            include_authored=True)
+        bulk_mark_read.clear(self.conn, rows)
+        again = bulk_mark_read.matching_rows(self.conn, "Opie", "2026-08-04",
+                                             include_authored=True)
+        self.assertEqual(again, [])
+
+    def test_cleared_messages_are_not_rematched(self):
+        self.add("cronalarm-daily-report-2026-07-27-all-clear",
+                 created_at="2026-07-27T00:00:00Z")
+        rows = bulk_mark_read.matching_rows(self.conn, "Opie", "2026-08-04")
+        bulk_mark_read.clear(self.conn, rows)
+        self.assertEqual(self.matched_subjects(), set())
 
 
 if __name__ == "__main__":
