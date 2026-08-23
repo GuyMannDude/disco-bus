@@ -50,6 +50,7 @@ const server = new McpServer({
     `Read a specific message's full body via 'ping_read'. ` +
     `List messages addressed to you via 'inbox'. ` +
     `Walk a full reply chain via 'thread'. ` +
+    `Find aged-out mail via 'search' (inbox shows the working set only). ` +
     `Other agents: ${peerList}.`,
 });
 
@@ -244,8 +245,12 @@ server.tool(
           `THIS call, so it is not evidence anyone saw this before you. Treat the ` +
           `message as unread-until-now and act on it.`
         : `ALREADY READ — #${id} was opened at ${data.read_at}, before this call.`;
+      // The archive note leads even the read/unread banner: whether this
+      // envelope is still live mail changes how the reader should act on it,
+      // and an archived one must never read as something sitting in the inbox.
+      const head = data.archive_note ? `${data.archive_note}\n\n${banner}` : banner;
       return {
-        content: [{ type: "text", text: `${banner}\n\n${JSON.stringify(data, null, 2)}` }],
+        content: [{ type: "text", text: `${head}\n\n${JSON.stringify(data, null, 2)}` }],
       };
     } catch (e) {
       return {
@@ -261,7 +266,10 @@ server.tool(
   `List messages addressed to an agent (default: this agent). Use filter="unread" ` +
     `for messages not yet opened, filter="unreplied" for messages not yet replied ` +
     `to, or filter="all". Legacy unread_only=true means "unreplied". Returns summary form ` +
-    `like ping_history — call ping_read(id) on anything you want to read fully.`,
+    `like ping_history — call ping_read(id) on anything you want to read fully. ` +
+    `Aged-out mail is ARCHIVED and absent from every filter here by default; the ` +
+    `header says how many were withheld. Archived mail is not lost — reach it with ` +
+    `search(scope="archived") or ping_read(id), or pass include_archived=true.`,
   {
     agent: z
       .string()
@@ -286,14 +294,22 @@ server.tool(
       .describe(
         'Inbox filter. "unread" = not opened AND not bulk-cleared (cleared_at); "unreplied" checks reply chains; "all" applies no filter.'
       ),
+    include_archived: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe(
+        "Include aged-out (archived) mail. Default false — the working set is the point. Use for a deliberate look back."
+      ),
   },
-  async ({ agent, limit, unread_only, filter }) => {
+  async ({ agent, limit, unread_only, filter, include_archived }) => {
     const target = agent || AGENT_ID;
     const params = new URLSearchParams({
       limit: String(limit),
       unread_only: String(unread_only),
     });
     if (filter) params.set("filter", filter);
+    if (include_archived) params.set("include_archived", "true");
     const url = `${DISPATCHER}/mesh/inbox/${encodeURIComponent(target)}?${params}`;
     try {
       const r = await fetch(url);
@@ -328,7 +344,15 @@ server.tool(
             ? `at least ${data.length} message(s) — page is FULL, total unknown (dispatcher predates X-Inbox-Total)`
             : `${data.length} message(s)`;
       }
-      const header = `Inbox for ${target} (${label}) — ${count}:`;
+      // A view that silently drops 1,009 envelopes is the failure this archiving
+      // replaced, so the working set never reports itself without saying what it
+      // is not showing (doctrine-negative-space).
+      const withheld = Number(r.headers.get("x-inbox-archived-withheld"));
+      const withheldNote =
+        Number.isFinite(withheld) && withheld > 0
+          ? ` — ${withheld} archived envelope(s) withheld; search(scope="archived") or include_archived=true to see them`
+          : "";
+      const header = `Inbox for ${target} (${label}) — ${count}${withheldNote}:`;
       return {
         content: [
           {
@@ -371,6 +395,80 @@ server.tool(
       }
       return {
         content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+      };
+    } catch (e) {
+      return {
+        content: [{ type: "text", text: `Dispatcher unreachable at ${DISPATCHER}: ${e.message}` }],
+      };
+    }
+  }
+);
+
+// --- search ---
+// The archive's front door from an agent's side. Without this, aged-out mail is
+// technically retained and practically gone: nobody browses a SQLite file.
+server.tool(
+  "search",
+  `Search bus mail by id, sender, recipient, date range, or substring over ` +
+    `subject and body. Searches the working set AND the archive by default, so ` +
+    `this is how you find aged-out mail that no longer appears in inbox(). ` +
+    `Returns summary form — call ping_read(id) for a full envelope.`,
+  {
+    q: z.string().optional().describe("Substring to match in subject or body (case-sensitive)."),
+    from: z.string().optional().describe("Sender agent name."),
+    to: z.string().optional().describe("Recipient agent name."),
+    since: z.string().optional().describe("ISO date/time lower bound, e.g. 2026-07-01."),
+    until: z.string().optional().describe("ISO date/time upper bound, e.g. 2026-07-31."),
+    id: z.number().int().min(1).optional().describe("Exact envelope id."),
+    scope: z
+      .enum(["all", "working", "archived"])
+      .optional()
+      .default("all")
+      .describe('Which side to search. Default "all" — both working set and archive.'),
+    limit: z.number().int().min(1).max(500).optional().default(50).describe("Max results."),
+  },
+  async ({ q, from, to, since, until, id, scope, limit }) => {
+    const params = new URLSearchParams({ limit: String(limit), scope });
+    if (q) params.set("q", q);
+    if (from) params.set("from", from);
+    if (to) params.set("to", to);
+    if (since) params.set("since", since);
+    if (until) params.set("until", until);
+    if (id !== undefined) params.set("id", String(id));
+    try {
+      const r = await fetch(`${DISPATCHER}/mesh/search?${params}`);
+      const data = await r.json();
+      if (!r.ok) {
+        return {
+          content: [
+            { type: "text", text: `Dispatcher error (HTTP ${r.status}): ${JSON.stringify(data)}` },
+          ],
+        };
+      }
+      // Same rule as inbox: report the dispatcher's total, never the page size
+      // (Opie #2339). A search that shows 50 of 400 hits and says "50" has told
+      // the reader the archive is smaller than it is.
+      const total = Number(r.headers.get("x-search-total"));
+      const truncated = r.headers.get("x-search-truncated") === "true";
+      const count =
+        Number.isFinite(total) && r.headers.get("x-search-total") !== null
+          ? truncated
+            ? `${data.length} of ${total} match(es) — TRUNCATED, ${total - data.length} not shown (raise limit)`
+            : `${total} match(es)`
+          : `${data.length} match(es) (total unknown)`;
+      const lines = data.map(
+        (m) =>
+          `#${m.id} ${m.created_at?.slice(0, 10)} ${m.from}>${m.to} ` +
+          `${m.archived_at ? "[ARCHIVED]" : "[working]"} subject=${JSON.stringify(m.subject)}`
+      );
+      const header = `Bus search (scope=${scope}) — ${count}:`;
+      return {
+        content: [
+          {
+            type: "text",
+            text: lines.length ? `${header}\n${lines.join("\n")}` : `${header}\n(no matches)`,
+          },
+        ],
       };
     } catch (e) {
       return {

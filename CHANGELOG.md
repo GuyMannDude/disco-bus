@@ -1,5 +1,49 @@
 # Changelog
 
+## v0.13 — The pile is bounded, and nothing left the table
+
+- **Problem:** v0.12 fixed the read COUNTER, not the VOLUME. Opie's unread went
+  to zero while his inbox still held 1,212 envelopes and `filter=all` returned
+  every one of them (Opie #2875). His words: "if another critical goes unread it
+  will now be buried in 1,212 instead of 488." Proof it is not hypothetical —
+  #409, `sec-watch:critical: PyPI package 'fastapi' compromised`, sent
+  2026-05-26, was still unread at the time of this change.
+- **Fix:** two additive columns, `archived_at` + `archive_reason` (migration in
+  `init_db`; mesh_version stays 0.5). Aged-out mail is FLAGGED, never moved to a
+  second database and never deleted, so "working + archived == the table" is a
+  schema invariant instead of a count somebody re-verifies after a risky move —
+  and the whole sweep reverses with one UPDATE. `POST /mesh/archive` runs the
+  rule, **dry-run unless `apply=true`**, and returns `conservation_ok` with the
+  result. Inbox excludes archived rows from all three filters and ships
+  `X-Inbox-Archived-Withheld` so a shrunken view says what it is not showing.
+  New `GET /mesh/search` (id / from / to / date range / substring, scope
+  working|archived|all) and a matching `search` MCP tool: retention without
+  retrieval is deletion with extra steps. `ping_read` on an archived envelope
+  leads with an `archive_note` naming where it now lives and whether it was ever
+  opened. Daily sweep via `~/scripts/bus-archive-sweep.sh` under cronalarm.
+- **The retention rule, and why it is not a flat 30 days.** Opie proposed 30 days
+  and invited an argument from the traffic. The traffic says an age line bounds
+  the AGE of the pile, never its SIZE: fleet volume tripled between W18-22
+  (~105/wk) and W30-33 (~325/wk), and at 30 days Opie still held 566 envelopes —
+  a number that grows with traffic forever. So the primary bound is a
+  per-recipient COUNT cap (200), with a 7-day floor so a busy day never archives
+  mail nobody has had time to read, and the 30-day line kept as the age ceiling.
+  Ceiling per agent: cap + criticals + the last 7 days. Opie 1,212 -> 203.
+- **Criticals are matched on the tier, never the word.** `{"tier":"critical"}` or
+  a structural `<watcher>:critical:` subject. A substring match on "critical"
+  instead catches 31 hot/quiet digests whose headlines mention a critical CVE
+  ("sec-watch-feeds:hot: Critical Windows zero-days") and exempts them forever —
+  a permanent pile wearing the carve-out's name.
+- **Read and never-read are archived alike, and stay distinguishable.** A
+  four-month-old unread envelope is not going to be opened. But 595 of the 2,134
+  swept had never been read, and `archive_reason` records `aged-out-unread`
+  separately from `aged-out` — collapsing the two would hide exactly the backlog
+  the sweep exists to expose.
+- **Substring search, not FTS5.** An FTS index is a second copy of the corpus
+  that must be kept in sync, and an index silently out of step with its table
+  reports "no such message" for a message that is right there. A LIKE scan over
+  2,871 rows is sub-millisecond; revisit at six figures.
+
 ## v0.12 — Swept is not read
 
 - **Problem:** Opie's unread stood at 488 and near-all of it was stale — daily

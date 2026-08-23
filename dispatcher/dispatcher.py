@@ -31,7 +31,14 @@ Routes:
   GET  /mesh/held[/{agent}] held envelopes (oldest first)
   GET  /mesh/state/{id}   single envelope by id (full body)
   GET  /mesh/history      recent envelopes (summary list)
+  GET  /mesh/search       query working set + archive (id/from/to/date/substring)
+  POST /mesh/archive      run the retention sweep (dry-run unless apply=true)
   GET  /healthz           liveness
+
+Archiving (Opie #2875): the working inbox is bounded per recipient; aged-out
+envelopes are FLAGGED, never moved or deleted, so working + archived always
+equals the table. See the ARCHIVE_* constants for the rule and why a count cap
+beats a flat age line.
 """
 
 import json
@@ -62,6 +69,38 @@ INBOX_LIMIT_MAX = 500
 # specific reason to allow larger payloads.
 MAX_BODY_BYTES = int(os.environ.get("DISCOBUS_MAX_BODY_BYTES", str(1024 * 1024)))
 
+# --- Archiving (Opie #2875, Guy's go 2026-08-23) -------------------------
+# The working set is bounded by COUNT and floored by TIME. Opie proposed a flat
+# 30-day line and invited an argument from the traffic shape: the traffic says a
+# pure age rule bounds the AGE of the pile, never its SIZE. Fleet volume tripled
+# between W18-22 (~105/wk) and W30-33 (~325/wk); at 30 days Opie still held 566
+# envelopes, and that number grows with traffic forever. A per-recipient count
+# cap is the only bound that survives growth, so the cap is primary and the age
+# floor exists to stop a busy day archiving mail nobody has had time to read.
+#
+# KEEP a message in the working set when ANY holds:
+#   - it is critical-tiered            (never ages out, at any volume)
+#   - it is newer than MIN_AGE_DAYS    (floor: recent mail is never archived)
+#   - it is within the newest KEEP_PER_AGENT for its recipient AND newer
+#     than MAX_AGE_DAYS
+# Ceiling per agent: KEEP_PER_AGENT + criticals + the last MIN_AGE_DAYS of mail.
+ARCHIVE_KEEP_PER_AGENT = int(os.environ.get("DISCOBUS_ARCHIVE_KEEP", "200"))
+ARCHIVE_MIN_AGE_DAYS = int(os.environ.get("DISCOBUS_ARCHIVE_MIN_AGE_DAYS", "7"))
+ARCHIVE_MAX_AGE_DAYS = int(os.environ.get("DISCOBUS_ARCHIVE_MAX_AGE_DAYS", "30"))
+SEARCH_LIMIT_DEFAULT = 50
+SEARCH_LIMIT_MAX = 500
+
+# Criticals are matched on the TIER, never on the word. Nine of the ten real
+# criticals carry {"tier":"critical"}; sec-watch also encodes it structurally as
+# '<watcher>:critical:' in the subject. A substring match on "critical" instead
+# catches 31 hot/quiet digests whose HEADLINES mention a critical CVE
+# ("sec-watch-feeds:hot: Critical Windows zero-days") and exempts them forever --
+# a permanent pile wearing the carve-out's name. Aliased m. because every
+# consumer below selects FROM messages m.
+CRITICAL_SQL = (
+    "(json_extract(m.body,'$.tier') = 'critical' OR m.subject LIKE '%:critical:%')"
+)
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [disco-bus] %(message)s")
 log = logging.getLogger("disco-bus")
 
@@ -81,11 +120,18 @@ CREATE TABLE IF NOT EXISTS messages (
     delivery_error TEXT,
     read_at TEXT,
     cleared_at TEXT,
-    cleared_reason TEXT
+    cleared_reason TEXT,
+    archived_at TEXT,
+    archive_reason TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_to ON messages(to_agent, state);
 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_reply ON messages(reply_to);
+-- idx_messages_archived is NOT created here. On an existing database
+-- CREATE TABLE IF NOT EXISTS is a no-op, so archived_at does not exist yet at
+-- executescript time and indexing it raises "no such column" before the ALTERs
+-- in init_db ever run. The index is created there instead, after the columns.
+
 CREATE TABLE IF NOT EXISTS pauses (
     agent TEXT PRIMARY KEY,
     paused_at TEXT NOT NULL
@@ -112,6 +158,21 @@ def init_db():
         conn.execute("ALTER TABLE messages ADD COLUMN cleared_at TEXT")
     if "cleared_reason" not in columns:
         conn.execute("ALTER TABLE messages ADD COLUMN cleared_reason TEXT")
+    # Archiving (Opie #2875). A flag, not a second database: the envelope never
+    # moves, so "working set + archive == the pre-archive total" is an invariant
+    # of the schema rather than a count somebody has to re-verify after a risky
+    # cross-file move. Retrieval by id keeps working untouched, and the whole
+    # sweep reverses with one UPDATE. Same one-guard-per-column rule as above:
+    # ALTERs autocommit independently, and a crash between them must not leave a
+    # state the migration can never repair.
+    if "archived_at" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN archived_at TEXT")
+    if "archive_reason" not in columns:
+        conn.execute("ALTER TABLE messages ADD COLUMN archive_reason TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_archived "
+        "ON messages(to_agent, archived_at)"
+    )
     conn.commit()
     conn.close()
 
@@ -261,6 +322,8 @@ def row_to_envelope(row) -> dict:
         "read_at": row["read_at"],
         "cleared_at": row["cleared_at"],
         "cleared_reason": row["cleared_reason"],
+        "archived_at": row["archived_at"],
+        "archive_reason": row["archive_reason"],
     }
 
 
@@ -334,6 +397,76 @@ class DispatcherHandler(BaseHTTPRequestHandler):
         # /mesh/inbox/<agent> — list messages addressed to that agent (newest first).
         # Optional query: ?limit=N&filter=unread|unreplied|all.
         # Legacy ?unread_only=true remains an alias for filter=unreplied.
+        # /mesh/search — the archive's front door. An archived envelope that
+        # cannot be found again is deleted with extra steps, so this searches
+        # BOTH sides by default: id, sender, recipient, date range, and
+        # substring over subject+body. Substring rather than FTS5 on purpose --
+        # an FTS index is a second copy of the corpus that has to be kept in
+        # sync, and a search index silently out of step with the table it
+        # indexes reports "no such message" for a message that is right there
+        # (doctrine-both-halves-green). A LIKE scan over 2,871 rows is
+        # sub-millisecond; revisit if this table reaches sixish figures.
+        if path == "/mesh/search":
+            qs = urllib.parse.parse_qs(parsed.query)
+            try:
+                limit = int(qs.get("limit", [SEARCH_LIMIT_DEFAULT])[0])
+            except ValueError:
+                return self._json(400, {"error": "invalid limit"})
+            limit = max(1, min(limit, SEARCH_LIMIT_MAX))
+            scope = qs.get("scope", ["all"])[0].lower()
+            if scope not in ("all", "working", "archived"):
+                return self._json(
+                    400, {"error": "scope must be one of: all, working, archived"}
+                )
+            where, params = ["1=1"], []
+            if qs.get("id", [""])[0]:
+                try:
+                    where.append("m.id = ?"); params.append(int(qs["id"][0]))
+                except ValueError:
+                    return self._json(400, {"error": "invalid id"})
+            registry = load_agents()
+            for field, column in (("from", "from_agent"), ("to", "to_agent")):
+                raw = qs.get(field, [""])[0]
+                if not raw:
+                    continue
+                # Same loud-404 rule the inbox uses: a typo'd sender must not
+                # read as "no results", which is indistinguishable from "this
+                # agent never wrote to you" (doctrine-evidence-reads-as-opposite).
+                canon = canonical_agent(raw, registry)
+                if canon is None:
+                    return self._json(404, {
+                        "error": f"unknown agent: {raw} (registry: {sorted(registry)})"
+                    })
+                where.append(f"m.{column} = ?"); params.append(canon)
+            if qs.get("since", [""])[0]:
+                where.append("m.created_at >= ?"); params.append(qs["since"][0])
+            if qs.get("until", [""])[0]:
+                where.append("m.created_at <= ?"); params.append(qs["until"][0])
+            q = qs.get("q", [""])[0]
+            if q:
+                where.append("(m.subject LIKE ? OR m.body LIKE ?)")
+                params += [f"%{q}%", f"%{q}%"]
+            if scope == "working":
+                where.append("m.archived_at IS NULL")
+            elif scope == "archived":
+                where.append("m.archived_at IS NOT NULL")
+            base = "FROM messages m WHERE " + " AND ".join(where)
+            conn = get_db()
+            rows = conn.execute(
+                f"SELECT m.* {base} ORDER BY m.id DESC LIMIT ?", (*params, limit)
+            ).fetchall()
+            total = conn.execute(f"SELECT COUNT(*) {base}", params).fetchone()[0]
+            conn.close()
+            return self._json(
+                200,
+                [row_to_envelope(r) for r in rows],
+                headers={
+                    "X-Search-Total": total,
+                    "X-Search-Returned": len(rows),
+                    "X-Search-Truncated": "true" if total > len(rows) else "false",
+                },
+            )
+
         if path.startswith("/mesh/inbox/"):
             agent = path[len("/mesh/inbox/"):]
             if not agent or "/" in agent:
@@ -363,6 +496,16 @@ class DispatcherHandler(BaseHTTPRequestHandler):
                 return self._json(
                     400, {"error": "filter must be one of: unread, unreplied, all"}
                 )
+            # Archived rows leave every view by default -- that is the whole
+            # point of the sweep. include_archived=true is the escape hatch for
+            # a deliberate look back; it is never the default, because a caller
+            # who wanted the working set and silently got 1,212 rows is exactly
+            # the failure this replaced.
+            include_archived = qs.get("include_archived", ["false"])[0].lower() in (
+                "true", "1", "yes",
+            )
+            archive_clause = "" if include_archived else " AND m.archived_at IS NULL"
+
             # Inbox never shows HELD/DROPPED: an undelivered draft is not mail,
             # and a held one showing up unread would leak exactly what pause
             # exists to hold back. A HELD reply likewise does not clear
@@ -407,14 +550,24 @@ class DispatcherHandler(BaseHTTPRequestHandler):
                          AND m.state NOT IN ('HELD','DROPPED')"""
                 params = (agent,)
 
+            # from_where is the BASE predicate; the archive clause composes onto
+            # it here. The page, the total and the withheld count are all built
+            # from that one base, so they cannot drift (Opie #2339).
+            working = from_where + archive_clause
             conn = get_db()
             rows = conn.execute(
-                f"SELECT m.* {from_where} ORDER BY m.id DESC LIMIT ?",
+                f"SELECT m.* {working} ORDER BY m.id DESC LIMIT ?",
                 (*params, limit),
             ).fetchall()
             # COUNT over the same predicate, WITHOUT the limit. This is the whole
             # point: `len(rows)` can only ever report the page size.
-            total = conn.execute(f"SELECT COUNT(*) {from_where}", params).fetchone()[0]
+            total = conn.execute(f"SELECT COUNT(*) {working}", params).fetchone()[0]
+            # What this view is NOT showing -- same base predicate, opposite side
+            # of the archive flag. total + archived_withheld is always the
+            # unfiltered count, so the two can never tell different stories.
+            archived_withheld = conn.execute(
+                f"SELECT COUNT(*) {from_where} AND m.archived_at IS NOT NULL", params
+            ).fetchone()[0] if not include_archived else 0
             conn.close()
             # Carried as headers, not body fields: the body stays a bare array so
             # every existing consumer (listeners, tests, the MCP bridge) is
@@ -427,6 +580,11 @@ class DispatcherHandler(BaseHTTPRequestHandler):
                     "X-Inbox-Total": total,
                     "X-Inbox-Returned": len(rows),
                     "X-Inbox-Truncated": "true" if total > len(rows) else "false",
+                    # An inbox that quietly hides 900 envelopes is the same
+                    # silent-drop failure as one that quietly caps a page, so the
+                    # withheld count ships with the rows that replaced it
+                    # (doctrine-loss-invisible: report the drop OUTWARD).
+                    "X-Inbox-Archived-Withheld": archived_withheld,
                 },
             )
 
@@ -529,6 +687,114 @@ class DispatcherHandler(BaseHTTPRequestHandler):
 
         # Only ping_read uses this recipient-bound mutation. Listing inbox,
         # history, threads, or raw state never marks a message read.
+        # /mesh/archive — run the retention sweep. Dry-run by DEFAULT: a sweep
+        # that moves 2,111 envelopes on a mistyped curl is not recoverable by
+        # apology, and the caller has to say apply=true out loud.
+        if path == "/mesh/archive":
+            if not isinstance(data, dict):
+                return self._json(400, {"error": "body must be a JSON object"})
+            apply_now = data.get("apply") is True
+            keep = int(data.get("keep_per_agent", ARCHIVE_KEEP_PER_AGENT))
+            min_age = int(data.get("min_age_days", ARCHIVE_MIN_AGE_DAYS))
+            max_age = int(data.get("max_age_days", ARCHIVE_MAX_AGE_DAYS))
+            if keep < 1 or min_age < 1 or max_age < 1:
+                return self._json(400, {"error": "keep/min_age/max_age must be >= 1"})
+            if min_age > max_age:
+                # The floor above the ceiling silently archives nothing, and a
+                # sweep that reports success having done nothing is the worst
+                # possible outcome: the pile stays and the alarm stops.
+                return self._json(
+                    400,
+                    {"error": f"min_age_days ({min_age}) must be <= max_age_days ({max_age})"},
+                )
+            # KEEP when: critical, or inside the age floor, or within the newest
+            # `keep` for this recipient and still inside the age ceiling.
+            # ARCHIVE is the negation, spelled out so the rule reads once.
+            select_doomed = f"""
+                WITH ranked AS (
+                  SELECT m.id AS id, m.read_at AS read_at, m.created_at AS created_at,
+                         CASE WHEN {CRITICAL_SQL} THEN 1 ELSE 0 END AS crit,
+                         ROW_NUMBER() OVER (
+                           PARTITION BY m.to_agent ORDER BY m.id DESC
+                         ) AS rnk
+                  FROM messages m
+                  WHERE m.archived_at IS NULL
+                    AND m.state NOT IN ('HELD','DROPPED')
+                )
+                SELECT id, read_at FROM ranked
+                WHERE crit = 0
+                  AND created_at < datetime('now', ?)
+                  AND NOT (rnk <= ? AND created_at >= datetime('now', ?))
+            """
+            args = (f"-{min_age} day", keep, f"-{max_age} day")
+            conn = get_db()
+            doomed = conn.execute(select_doomed, args).fetchall()
+            before = conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE archived_at IS NULL"
+            ).fetchone()[0]
+            # read and never-read are archived alike -- a four-month-old unread
+            # envelope is not going to be opened -- but the reason column keeps
+            # them distinguishable forever. "Aged out having never been read" is
+            # a different fact from "handled, then aged out", and collapsing the
+            # two would hide exactly the backlog this sweep exists to expose.
+            unread = sum(1 for r in doomed if r["read_at"] is None)
+            stamped = 0
+            if apply_now and doomed:
+                ts = now_utc()
+                conn.executemany(
+                    "UPDATE messages SET archived_at=?, archive_reason=? "
+                    "WHERE id=? AND archived_at IS NULL",
+                    [
+                        (ts, "aged-out-unread" if r["read_at"] is None else "aged-out", r["id"])
+                        for r in doomed
+                    ],
+                )
+                conn.commit()
+                stamped = conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE archived_at=?", (ts,)
+                ).fetchone()[0]
+            after_working = conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE archived_at IS NULL"
+            ).fetchone()[0]
+            after_archived = conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE archived_at IS NOT NULL"
+            ).fetchone()[0]
+            total = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            per_agent = {
+                r["to_agent"]: r["n"]
+                for r in conn.execute(
+                    "SELECT to_agent, COUNT(*) AS n FROM messages "
+                    "WHERE archived_at IS NULL AND state NOT IN ('HELD','DROPPED') "
+                    "GROUP BY to_agent ORDER BY n DESC"
+                ).fetchall()
+            }
+            conn.close()
+            log.info(
+                "archive sweep %s: %d candidates (%d never read), working %d -> %d",
+                "APPLIED" if apply_now else "dry-run", len(doomed), unread,
+                before, after_working,
+            )
+            return self._json(200, {
+                "applied": apply_now,
+                "rule": {
+                    "keep_per_agent": keep,
+                    "min_age_days": min_age,
+                    "max_age_days": max_age,
+                },
+                "candidates": len(doomed),
+                "candidates_never_read": unread,
+                "archived_this_run": stamped,
+                "working_before": before,
+                "working_after": after_working,
+                "archived_total": after_archived,
+                # The conservation check ships WITH the result instead of being
+                # left for the caller to run: nothing left the table, and the
+                # response proves it rather than asserting it.
+                "conservation_ok": after_working + after_archived == total,
+                "messages_total": total,
+                "working_per_agent": per_agent,
+            })
+
         if path.startswith("/mesh/read/"):
             try:
                 msg_id = int(path.rsplit("/", 1)[-1])
@@ -566,7 +832,28 @@ class DispatcherHandler(BaseHTTPRequestHandler):
             conn.close()
             # Not part of row_to_envelope: it describes this call, not the row, so
             # inbox/history/state listings must not grow a meaningless field.
-            return self._json(200, {**row_to_envelope(row), "first_read": first_read})
+            payload = {**row_to_envelope(row), "first_read": first_read}
+            # Opie #2875, honesty_in_the_response: retrieval must not let an
+            # archived envelope read as live mail. The envelope is identical
+            # either way, so the difference has to be said in words -- and it
+            # names where the message now lives, because "archived" without a
+            # location is a claim the reader cannot check.
+            if row["archived_at"]:
+                never_read = row["archive_reason"] == "aged-out-unread"
+                payload["archive_note"] = (
+                    f"ARCHIVED {row['archived_at']} (reason: {row['archive_reason']}). "
+                    f"This envelope is NOT in {row['to_agent']}'s working inbox and will "
+                    f"not appear there. It was retained in full, in the same messages "
+                    f"table, and stays reachable by id and via /mesh/search"
+                    f"?scope=archived. "
+                    + (
+                        "It aged out having NEVER been read -- nobody opened it "
+                        "before it left the working set."
+                        if never_read
+                        else "It had been read before it aged out."
+                    )
+                )
+            return self._json(200, payload)
 
         # /mesh/pause — hold every future ping FROM this agent. Idempotent;
         # re-pausing keeps the original paused_at (the hold started then).
