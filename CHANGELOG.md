@@ -20,6 +20,24 @@
   on ALIVE only; BROKEN/BLIND/CRASHED remain real mail. Tests:
   `dispatcher/test_status_ping.py` (born-swept, ordinary-mail control,
   unknown-class rejection).
+- **Post-review hardening (same day, code-review findings 1–5):** criticals
+  can never be furniture — `class=status` on an envelope with
+  `body.tier=critical` or `:critical:` in the subject is rejected 400, the
+  same carve-out bulk_mark_read and the archive sweep already enforce on
+  their own exits from the unread view. The immediate-delivery envelope now
+  carries `cleared_at`/`cleared_reason` like the flush path already did, so a
+  listener can tell furniture from mail regardless of whether the sender was
+  paused. The archive sweep counts only genuinely-pending rows as never-read
+  backlog and stamps swept-not-opened rows `aged-out-swept` (bulk-drained
+  rows included) — born-swept furniture no longer pollutes the metric the
+  sweep exists to expose. `schema/envelope-v0.5.json` updated: `class` plus
+  the v0.12/v0.13 fields it had silently drifted from
+  (`cleared_at`/`cleared_reason`/`archived_at`/`archive_reason`). Tests
+  extended: swept-not-vanished (`filter=all` + search), HELD-through-flush,
+  critical rejection. Deliberate scope: the MCP `ping` tool does not expose
+  `class` — an agent's own mail is never furniture; raw-HTTP machine senders
+  only. Discord mirror still mirrors status pings (the badge was the
+  complaint, not the mirror).
 
 ## v0.13 — The pile is bounded, and nothing left the table
 

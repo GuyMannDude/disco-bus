@@ -77,6 +77,31 @@
       "description": "ISO-8601 UTC timestamp when the recipient first fetched the message through ping_read. Null until read.",
       "type": ["string", "null"],
       "format": "date-time"
+    },
+    "class": {
+      "description": "Optional envelope class on inbound /mesh/ping (v0.14). 'status' = a heartbeat, not a letter: born swept (cleared_at set at insert, read_at stays null) so it never counts unread. Rejected on critical envelopes. Absent from dispatcher-delivered envelopes — cleared_at/cleared_reason carry the fact downstream.",
+      "type": "string",
+      "enum": ["status"]
+    },
+    "cleared_at": {
+      "description": "ISO-8601 UTC timestamp when the envelope left the unread view WITHOUT being opened (v0.12 bulk drain, or v0.14 status ping at insert). Null otherwise; read_at stays null — cleared means swept, not read.",
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "cleared_reason": {
+      "description": "Why the envelope was swept: e.g. 'status-ping' (v0.14 born-swept) or a bulk-drain reason (v0.12). Null unless cleared_at is set.",
+      "type": ["string", "null"],
+      "maxLength": 200
+    },
+    "archived_at": {
+      "description": "ISO-8601 UTC timestamp when the age-out sweep flagged this row out of the working set (v0.13). Null while in the working set.",
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "archive_reason": {
+      "description": "Why it was archived: 'aged-out' (was read), 'aged-out-unread' (never read, never swept), 'aged-out-swept' (swept, never opened). Null unless archived_at is set.",
+      "type": ["string", "null"],
+      "maxLength": 200
     }
   }
 }

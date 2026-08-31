@@ -307,6 +307,15 @@ def validate_envelope_input(data, valid_agents: set) -> tuple[bool, str | None]:
     cls = data.get("class")
     if cls is not None and cls != "status":
         return False, f"class must be 'status' or omitted, got {cls!r}"
+    # Criticals can never be furniture. bulk_mark_read's NEVER_SWEEP and the
+    # archive sweep's CRITICAL_SQL both already exempt criticals from leaving
+    # the unread view; this is the third door out and it gets the same lock —
+    # the realistic failure is a sender helper copying the status pattern onto
+    # a critical digest, not malice (review 2026-08-31 finding 1).
+    if cls == "status" and (
+        data["body"].get("tier") == "critical" or ":critical:" in data["subject"]
+    ):
+        return False, "class=status is not allowed on a critical envelope"
     body_bytes = len(json.dumps(data["body"]).encode("utf-8"))
     if body_bytes > MAX_BODY_BYTES:
         return False, f"body too large: {body_bytes} bytes > limit {MAX_BODY_BYTES}"
@@ -720,7 +729,8 @@ class DispatcherHandler(BaseHTTPRequestHandler):
             # ARCHIVE is the negation, spelled out so the rule reads once.
             select_doomed = f"""
                 WITH ranked AS (
-                  SELECT m.id AS id, m.read_at AS read_at, m.created_at AS created_at,
+                  SELECT m.id AS id, m.read_at AS read_at,
+                         m.cleared_at AS cleared_at, m.created_at AS created_at,
                          CASE WHEN {CRITICAL_SQL} THEN 1 ELSE 0 END AS crit,
                          ROW_NUMBER() OVER (
                            PARTITION BY m.to_agent ORDER BY m.id DESC
@@ -729,7 +739,7 @@ class DispatcherHandler(BaseHTTPRequestHandler):
                   WHERE m.archived_at IS NULL
                     AND m.state NOT IN ('HELD','DROPPED')
                 )
-                SELECT id, read_at FROM ranked
+                SELECT id, read_at, cleared_at FROM ranked
                 WHERE crit = 0
                   AND created_at < datetime('now', ?)
                   AND NOT (rnk <= ? AND created_at >= datetime('now', ?))
@@ -740,22 +750,32 @@ class DispatcherHandler(BaseHTTPRequestHandler):
             before = conn.execute(
                 "SELECT COUNT(*) FROM messages WHERE archived_at IS NULL"
             ).fetchone()[0]
-            # read and never-read are archived alike -- a four-month-old unread
-            # envelope is not going to be opened -- but the reason column keeps
-            # them distinguishable forever. "Aged out having never been read" is
-            # a different fact from "handled, then aged out", and collapsing the
-            # two would hide exactly the backlog this sweep exists to expose.
-            unread = sum(1 for r in doomed if r["read_at"] is None)
+            # read, swept and never-read are archived alike -- a four-month-old
+            # unread envelope is not going to be opened -- but the reason column
+            # keeps them distinguishable forever. Three facts, three reasons:
+            # "handled" (read), "swept out of the unread view without being
+            # opened" (bulk drain or born-swept status ping), and "aged out
+            # having NEVER left the unread pile" -- only the last is the backlog
+            # this sweep exists to expose, and counting swept furniture in it
+            # would relocate the badge pollution v0.14 removed into this metric
+            # (review 2026-08-31 finding 3).
+            unread = sum(
+                1 for r in doomed
+                if r["read_at"] is None and r["cleared_at"] is None
+            )
+
+            def reason(r):
+                if r["read_at"] is not None:
+                    return "aged-out"
+                return "aged-out-swept" if r["cleared_at"] is not None else "aged-out-unread"
+
             stamped = 0
             if apply_now and doomed:
                 ts = now_utc()
                 conn.executemany(
                     "UPDATE messages SET archived_at=?, archive_reason=? "
                     "WHERE id=? AND archived_at IS NULL",
-                    [
-                        (ts, "aged-out-unread" if r["read_at"] is None else "aged-out", r["id"])
-                        for r in doomed
-                    ],
+                    [(ts, reason(r), r["id"]) for r in doomed],
                 )
                 conn.commit()
                 stamped = conn.execute(
@@ -847,18 +867,22 @@ class DispatcherHandler(BaseHTTPRequestHandler):
             # names where the message now lives, because "archived" without a
             # location is a claim the reader cannot check.
             if row["archived_at"]:
-                never_read = row["archive_reason"] == "aged-out-unread"
+                reason_notes = {
+                    "aged-out-unread": "It aged out having NEVER been read -- nobody "
+                                       "opened it before it left the working set.",
+                    "aged-out-swept": "It was swept out of the unread view without "
+                                      "being opened (bulk drain or status ping) "
+                                      "before it aged out.",
+                }
                 payload["archive_note"] = (
                     f"ARCHIVED {row['archived_at']} (reason: {row['archive_reason']}). "
                     f"This envelope is NOT in {row['to_agent']}'s working inbox and will "
                     f"not appear there. It was retained in full, in the same messages "
                     f"table, and stays reachable by id and via /mesh/search"
                     f"?scope=archived. "
-                    + (
-                        "It aged out having NEVER been read -- nobody opened it "
-                        "before it left the working set."
-                        if never_read
-                        else "It had been read before it aged out."
+                    + reason_notes.get(
+                        row["archive_reason"],
+                        "It had been read before it aged out.",
                     )
                 )
             return self._json(200, payload)
@@ -1044,6 +1068,12 @@ class DispatcherHandler(BaseHTTPRequestHandler):
             "delivered_at": None,
             "delivery_error": None,
             "read_at": None,
+            # flush_held delivers row_to_envelope(), which carries these; the
+            # immediate path must match or a listener can only tell furniture
+            # from mail when the sender happened to be paused (review
+            # 2026-08-31 finding 2).
+            "cleared_at": created_at if is_status else None,
+            "cleared_reason": "status-ping" if is_status else None,
         }
 
         threading.Thread(target=deliver, args=(envelope, agents), daemon=True).start()

@@ -102,6 +102,46 @@ class StatusPingTests(unittest.TestCase):
             self.ping(**{"class": "heartbeat"})
         self.assertEqual(ctx.exception.code, 400)
 
+    def test_status_ping_stays_in_all_and_search(self):
+        # The safety argument for born-swept is "delivered, searchable, in
+        # filter=all" — swept must never mean vanished.
+        msg_id = self.ping(**{"class": "status"})["id"]
+        self.assertIn(
+            msg_id, [m["id"] for m in self.get_json("/mesh/inbox/Opie?filter=all")]
+        )
+        self.assertIn(
+            msg_id,
+            [m["id"] for m in self.get_json("/mesh/search?from=discord-liveness")],
+        )
+
+    def test_held_status_ping_stays_swept_through_flush(self):
+        # A paused sender's status ping is born swept while HELD and keeps its
+        # birth cleared_at through /mesh/play's flush — the one branch where
+        # insert-time and delivery-time state could disagree.
+        self.post_json("/mesh/pause", {"agent": "discord-liveness"})
+        sent = self.ping(**{"class": "status"})
+        self.assertEqual(sent["state"], "HELD")
+        state = self.get_json(f"/mesh/state/{sent['id']}")
+        self.assertEqual(state["cleared_at"], state["created_at"])
+
+        self.post_json("/mesh/play", {"agent": "discord-liveness"})
+        self.assertEqual(self.get_json("/mesh/inbox/Opie?filter=unread"), [])
+        after = self.get_json(f"/mesh/state/{sent['id']}")
+        self.assertEqual(after["cleared_at"], state["cleared_at"])
+        self.assertEqual(after["cleared_reason"], "status-ping")
+        self.assertIsNone(after["read_at"])
+
+    def test_critical_envelope_cannot_be_status(self):
+        # Criticals can never be furniture — same carve-out bulk_mark_read and
+        # the archive sweep already enforce on their own exits from unread.
+        for critical in (
+            {"body": {"verdict": "ALIVE", "tier": "critical"}},
+            {"subject": "sec-watch:critical: daily digest"},
+        ):
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                self.ping(**{"class": "status"}, **critical)
+            self.assertEqual(ctx.exception.code, 400)
+
 
 if __name__ == "__main__":
     unittest.main()
