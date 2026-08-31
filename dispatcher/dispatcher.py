@@ -299,6 +299,14 @@ def validate_envelope_input(data, valid_agents: set) -> tuple[bool, str | None]:
     rt = data.get("reply_to")
     if rt is not None and not (isinstance(rt, int) and rt >= 1):
         return False, "reply_to must be a positive integer or null"
+    # class=status: a heartbeat is a status light, not a letter (snag
+    # 2026-08-31, heartbeat-pings-pollute-unread: the eye badge showed Opie
+    # "1 unread" that was a daily liveness ping he was RIGHT to never open).
+    # Unknown values are rejected, not ignored — a typo'd class silently
+    # becoming ordinary mail would re-create the stuck badge it exists to fix.
+    cls = data.get("class")
+    if cls is not None and cls != "status":
+        return False, f"class must be 'status' or omitted, got {cls!r}"
     body_bytes = len(json.dumps(data["body"]).encode("utf-8"))
     if body_bytes > MAX_BODY_BYTES:
         return False, f"body too large: {body_bytes} bytes > limit {MAX_BODY_BYTES}"
@@ -987,11 +995,16 @@ class DispatcherHandler(BaseHTTPRequestHandler):
             "SELECT 1 FROM pauses WHERE agent=?", (data["from"],)
         ).fetchone() is not None
         state = "HELD" if paused else "SENT"
+        # A status-class envelope is born swept: cleared_at at insert keeps it
+        # out of every unread view (inbox filter=unread, IRIS badge) while
+        # read_at stays NULL — nobody opened it, and the row still says so.
+        # Delivery, search, and filter=all are untouched.
+        is_status = data.get("class") == "status"
         cur = conn.execute(
             """INSERT INTO messages
                (mesh_version, tracking_id, from_agent, to_agent, reply_to,
-                subject, body, state, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                subject, body, state, created_at, cleared_at, cleared_reason)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 MESH_VERSION,
                 "pending",
@@ -1002,6 +1015,8 @@ class DispatcherHandler(BaseHTTPRequestHandler):
                 body_json,
                 state,
                 created_at,
+                created_at if is_status else None,
+                "status-ping" if is_status else None,
             ),
         )
         msg_id = cur.lastrowid

@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.14 — A status light is not a letter
+
+- **Problem:** automated heartbeats (discord-liveness's daily ALIVE line to
+  Opie) sat permanently unread: only the recipient can mark mail read, and the
+  recipient is *right* to never open furniture. The result was a stuck nonzero
+  eye badge that grew by one per heartbeat per day and meant nothing — Guy
+  spent a morning trying to clear #3103 and could not, because no one could
+  (snag heartbeat-pings-pollute-unread, 2026-08-31).
+- **Fix:** optional envelope field `class: "status"` on `/mesh/ping`
+  (mesh_version stays 0.5, additive). A status envelope is born swept:
+  `cleared_at` = `created_at`, `cleared_reason` = `status-ping` at insert, so
+  it never appears in any unread view (inbox `filter=unread`, IRIS badge)
+  while `read_at` stays NULL — nobody opened it and the row still says so.
+  Delivery, search, and `filter=all` are untouched; the latest heartbeat
+  remains readable on demand. Unknown class values are rejected 400, not
+  ignored — a typo'd class silently becoming ordinary mail would re-create
+  the stuck badge. Sender updated: discord-liveness sends `class: "status"`
+  on ALIVE only; BROKEN/BLIND/CRASHED remain real mail. Tests:
+  `dispatcher/test_status_ping.py` (born-swept, ordinary-mail control,
+  unknown-class rejection).
+
 ## v0.13 — The pile is bounded, and nothing left the table
 
 - **Problem:** v0.12 fixed the read COUNTER, not the VOLUME. Opie's unread went
