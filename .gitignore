@@ -27,3 +27,4 @@ discord-channels.json
 .idea/
 *.swp
 .DS_Store
+*.bak-*
