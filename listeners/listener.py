@@ -28,6 +28,9 @@ Configured via env:
                        person at the keyboard hears mail land without polling
                        (listeners/on-deliver/chime.sh, chime.ps1).
   DISCOBUS_ON_DELIVER_TIMEOUT  seconds (default 15)
+                       v0.16: a bell that exits 3 chose silence by policy
+                       (listeners/on-deliver/chime-policy.py: skip list,
+                       cooldown, wake marker); logged at info, not warning.
 
 Behavior:
   - Always: write envelope to <inbox>/<agent>/<tracking_id>.json (atomic)
@@ -136,7 +139,11 @@ def run_on_deliver(envelope: dict) -> None:
             text=True,
             timeout=ON_DELIVER_TIMEOUT,
         )
-        if result.returncode != 0:
+        if result.returncode == 3:
+            # v0.16: the bell's policy chose silence (skip list, cooldown) —
+            # a decision, not a failure; the letter is in the inbox regardless
+            log.info(f"on-deliver silent by policy: {result.stderr.strip()[:200]}")
+        elif result.returncode != 0:
             log.warning(f"on-deliver exit {result.returncode}: {result.stderr.strip()[:300]}")
     except subprocess.TimeoutExpired:
         log.warning(f"on-deliver timeout after {ON_DELIVER_TIMEOUT}s")

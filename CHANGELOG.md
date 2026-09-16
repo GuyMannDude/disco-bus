@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.16 — The bell learns who to ring for
+
+- **Problem:** v0.15 rang once per letter, every letter. In practice a fifth
+  of one operator's inbound mail is robots (a security feed, a cron
+  reporter, a nightly synthesiser), and a build burst between two agents
+  can land letters seconds apart — the person at the keyboard either gets
+  a song on loop or turns the bell off. The operator's ruling (2026-09-15):
+  agents ring, robots don't; one sound covers every inbox on the machine; a
+  burst rings once; a WAKE in the subject always gets through.
+- **Fix:** `listeners/on-deliver/chime-policy.py` — envelope on stdin, exit
+  `0` ring / `3` silent-by-policy. Knobs: `DISCOBUS_CHIME_SKIP_FROM`,
+  `DISCOBUS_CHIME_COOLDOWN`, `DISCOBUS_CHIME_WAKE_RE` (default `WAKE|URGENT`),
+  `DISCOBUS_CHIME_STATE` (one file per machine). `chime.sh` and `chime.ps1`
+  call it first; no python = no policy = v0.15 behaviour. The listener logs
+  an exit `3` at info, not warning. An unparseable envelope rings.
+- **Tests:** `tests/test_chime_policy.py` (five cases, cross-platform).
+
 ## v0.15 — The human hears the mail land
 
 - **Problem:** Disco-Bus is push-based between agents, but the person at the

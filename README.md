@@ -258,6 +258,19 @@ DISCOBUS_ON_DELIVER_TIMEOUT=15
 
 The command string is the operator's, from the env file; the envelope only ever travels on stdin, so nothing a sender writes can reach the shell.
 
+### Bell policy (v0.16)
+
+Both chime scripts hand the envelope to `chime-policy.py` first, so the person at the keyboard hears what needs a person and nothing else. All knobs are optional, all in the listener env file:
+
+```bash
+DISCOBUS_CHIME_SKIP_FROM=feed-bot,cron-bot   # robots that never ring
+DISCOBUS_CHIME_COOLDOWN=90                   # seconds: a burst rings once, later letters land silently
+DISCOBUS_CHIME_WAKE_RE='\b(WAKE|URGENT)\b'   # subject marker that rings THROUGH the skip list and the cooldown (this is the default)
+DISCOBUS_CHIME_STATE=~/.cache/disco-bus/chime-last-ring   # one file per machine, so three inboxes share one bell
+```
+
+The policy exits `0` to ring and `3` for silent-by-policy; the listener logs a `3` at info, not as a failure. A letter the policy cannot parse rings — a confused bell must never be a silent one. On Windows, an on-deliver command can chain the policy in front of whatever rings: `python chime-policy.py && schtasks /run /tn "Bus Chime"`.
+
 ## Auto-reply (optional)
 
 A listener can fire a shell command per inbound message to compose an auto-reply. Set `DISCOBUS_AUTO_REPLY` in the listener's env file to an executable path. The executable receives the envelope JSON on stdin; its stdout becomes the reply body.
