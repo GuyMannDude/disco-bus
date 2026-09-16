@@ -74,6 +74,7 @@ def _wait(pred, timeout=5.0):
     return pred()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="bell fixture is a bash script; shell=True is cmd.exe on Windows, which cannot run it (CC2 #3548)")
 def test_letter_rings_once_with_envelope_on_stdin(listener):
     port, marker, inbox, _ = listener
     r = requests.post(f"http://127.0.0.1:{port}/inbox", json=_env(1), timeout=5)
