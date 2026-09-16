@@ -248,7 +248,7 @@ Each MCP instance is identity-bound: it can only send `from: <DISCOBUS_AGENT>`. 
 
 ## On-deliver bell (optional)
 
-The mesh is push-based between agents, but the person at the keyboard is not — a turn-based session only sees mail when they ask. `DISCOBUS_ON_DELIVER` runs a shell command once per inbound letter (never for `class:"status"` furniture) with the envelope JSON on stdin; output is ignored and a failure is logged, never fatal. Two bells ship in `listeners/on-deliver/`: `chime.sh` (Linux, `paplay`) and `chime.ps1` (Windows, `SoundPlayer`, beep fallback).
+The mesh is push-based between agents, but the person at the keyboard is not — a turn-based session only sees mail when they ask. `DISCOBUS_ON_DELIVER` runs a shell command once per inbound letter (never for `class:"status"` furniture) with the envelope JSON on stdin; output is ignored and a failure is logged, never fatal — except a stderr line starting `chime-policy` on exit 0, which the listener logs as a warning (the shipped bells' way of saying "I rang, but something is off"). Two bells ship in `listeners/on-deliver/`: `chime.sh` (Linux, `paplay`) and `chime.ps1` (Windows, `SoundPlayer`, beep fallback).
 
 ```bash
 # ~/.config/disco-bus/listener-alpha.env
@@ -274,7 +274,7 @@ DISCOBUS_CHIME_WAKE_RE='\b(WAKE|URGENT)\b'
 DISCOBUS_CHIME_STATE=~/.cache/disco-bus/chime-last-ring
 ```
 
-The policy exits `0` to ring and `3` for silent-by-policy; the listener logs a `3` at info, not as a failure. A letter the policy cannot parse rings — a confused bell must never be a silent one. A bell that rang *without* its policy (script missing or broken, a setting it could not read) still rings, and the listener logs `on-deliver rang with a complaint` so the journal says why robots are ringing again. Listeners sharing a state file take turns through `<state>.lock`, so a burst across three inboxes rings once. On Windows, an on-deliver command can chain the policy in front of whatever rings: `python chime-policy.py && schtasks /run /tn "Bus Chime"`.
+The policy exits `0` to ring and `3` for silent-by-policy; the listener logs a `3` at info, not as a failure. A letter the policy cannot parse rings — a confused bell must never be a silent one. A bell that rang *without* its policy (script missing or broken), on a setting it could not read, or on a state file it could not lock or write, still rings, and the listener logs `on-deliver rang with a complaint` so the journal says why robots are ringing again or a burst doubled. Listeners sharing a state file take turns through `<state>.lock`, so a burst across three inboxes rings once. On Windows, an on-deliver command can chain the policy in front of whatever rings: `python chime-policy.py && schtasks /run /tn "Bus Chime"`.
 
 ## Auto-reply (optional)
 

@@ -88,6 +88,33 @@ def test_bad_cooldown_rings_and_complains_out_loud(tmp_path):
     assert ring and why == "ring" and "DISCOBUS_CHIME_COOLDOWN" in complaint
     r = _run_policy(_letter("beta", "y"), _proc_env(st, DISCOBUS_CHIME_COOLDOWN="90   # seconds"))
     assert r.returncode == 0 and "chime-policy: bad DISCOBUS_CHIME_COOLDOWN" in r.stderr
+    for bad in ("inf", "nan"):   # would silence the bell forever / disable it silently
+        ring, _, complaint = cp.decide(_env(DISCOBUS_CHIME_COOLDOWN=bad), {"from": "beta", "subject": "x"}, 1000.0, st)
+        assert ring and "DISCOBUS_CHIME_COOLDOWN" in complaint
+
+
+def test_state_file_it_cannot_write_or_lock_rings_and_complains(tmp_path, monkeypatch):
+    # a bare relative name works (lives in the cwd) — no complaint
+    monkeypatch.chdir(tmp_path)
+    assert cp.decide(_env(), {"from": "beta", "subject": "x"}, 1000.0, "chime-last-ring") == (True, "ring", "")
+    assert cp.decide(_env(), {"from": "beta", "subject": "y"}, 1001.0, "chime-last-ring")[0] is False
+    assert (tmp_path / "chime-last-ring").exists() and (tmp_path / "chime-last-ring.lock").exists()
+    if os.name == "nt" or os.geteuid() == 0:
+        return  # directory permissions do not bite there
+    locked = tmp_path / "readonly"; locked.mkdir(); locked.chmod(0o500)
+    try:
+        ring, why, complaint = cp.decide(_env(), {"from": "beta", "subject": "x"}, 1000.0, str(locked / "last"))
+        assert ring and why == "ring" and "could not lock" in complaint and "could not write" in complaint
+        r = _run_policy(_letter("beta", "x"), _proc_env(str(locked / "last")))
+        assert r.returncode == 0 and r.stderr.startswith("chime-policy: could not lock")
+    finally:
+        locked.chmod(0o700)
+
+
+def test_a_crash_still_rings_with_exit_zero(tmp_path):
+    # undecodable stdin: the only exit codes are 0 and 3, Windows chains && on it
+    r = subprocess.run([sys.executable, str(POLICY)], input=b"\xff\xfe", capture_output=True, env=_proc_env(str(tmp_path / "last")))
+    assert r.returncode == 0 and b"chime-policy: crashed" in r.stderr
 
 
 def test_unparseable_letter_still_rings(tmp_path):
@@ -115,15 +142,16 @@ def test_state_path_expands_tilde(tmp_path, monkeypatch):
 
 
 def test_eight_concurrent_bells_ring_exactly_once(tmp_path):
-    st = str(tmp_path / "last")
-    env = _proc_env(st)
-    procs = [subprocess.Popen([sys.executable, str(POLICY)], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                              stderr=subprocess.DEVNULL, text=True, env=env) for _ in range(8)]
-    for i, p in enumerate(procs):      # hand every bell its letter BEFORE waiting on any: they run together
-        p.stdin.write(_letter(f"agent{i}", "burst")); p.stdin.close()
-    rcs = sorted(p.wait() for p in procs)
-    assert rcs == [0] + [3] * 7, rcs
-    assert not list(tmp_path.glob("last.*.tmp"))   # no half-written stamps left behind
+    for burst in range(5):   # the unlocked v0.16 code passed a single burst about half the time
+        st = str(tmp_path / f"last{burst}")
+        env = _proc_env(st)
+        procs = [subprocess.Popen([sys.executable, str(POLICY)], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL, text=True, env=env) for _ in range(8)]
+        for i, p in enumerate(procs):      # hand every bell its letter BEFORE waiting on any: they run together
+            p.stdin.write(_letter(f"agent{i}", "burst")); p.stdin.close()
+        rcs = sorted(p.wait() for p in procs)
+        assert rcs == [0] + [3] * 7, (burst, rcs)
+    assert not list(tmp_path.glob("last*.tmp"))   # no half-written stamps left behind
 
 
 @pytest.mark.skipif(os.name == "nt", reason="bash wrapper; shell=True is cmd.exe on Windows")
@@ -167,8 +195,15 @@ def test_listener_logs_silence_as_info_not_warning(tmp_path, caplog, monkeypatch
 
 
 def test_listener_warns_when_the_bell_rang_with_a_complaint(tmp_path, caplog, monkeypatch):
-    listener = _reload_listener(monkeypatch, "echo policy-missing 1>&2")   # sh and cmd.exe both
+    listener = _reload_listener(monkeypatch, "echo chime-policy: policy-missing 1>&2")   # sh and cmd.exe both
     with caplog.at_level(logging.INFO):
         listener.run_on_deliver({"from": "beta", "subject": "x"})
     assert any("rang with a complaint" in r.message and "policy-missing" in r.message and r.levelno == logging.WARNING
                for r in caplog.records)
+
+
+def test_listener_ignores_a_chatty_operator_bell(tmp_path, caplog, monkeypatch):
+    listener = _reload_listener(monkeypatch, "echo 42%% downloaded 1>&2")   # curl-style progress on stderr, exit 0
+    with caplog.at_level(logging.INFO):
+        listener.run_on_deliver({"from": "beta", "subject": "x"})
+    assert not any(r.levelno >= logging.WARNING for r in caplog.records)

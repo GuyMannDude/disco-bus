@@ -10,7 +10,9 @@ $raw = [Console]::In.ReadToEnd()
 # is what the listener logs as "rang with a complaint".
 $policy = Join-Path $PSScriptRoot "chime-policy.py"
 $py = Get-Command python -ErrorAction SilentlyContinue
-if ($py -and (Test-Path $policy)) {
+if (-not (Test-Path $policy)) {
+  [Console]::Error.WriteLine("chime-policy missing at ${policy}: rang without policy")
+} elseif ($py) {
   $out = ($raw | & $py.Source $policy 2>&1 | Out-String).Trim()
   $rc = $LASTEXITCODE
   if ($rc -eq 3) { [Console]::Error.WriteLine($out); exit 3 }

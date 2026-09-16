@@ -145,10 +145,12 @@ def run_on_deliver(envelope: dict) -> None:
             log.info(f"on-deliver silent by policy: {result.stderr.strip()[:200]}")
         elif result.returncode != 0:
             log.warning(f"on-deliver exit {result.returncode}: {result.stderr.strip()[:300]}")
-        elif result.stderr.strip():
+        elif any(line.startswith("chime-policy") for line in result.stderr.splitlines()):
             # v0.17: it rang, but the bell has a complaint (its policy missing
-            # or broken, a setting it could not read). Stderr on exit 0 is how
-            # the chime scripts stay fail-open AND loud.
+            # or broken, a setting it could not read, a state file it could
+            # not lock). Stderr on exit 0 is how the chime scripts stay
+            # fail-open AND loud; only `chime-policy...` lines count, so an
+            # operator's chatty bell (curl progress, deprecations) stays quiet.
             log.warning(f"on-deliver rang with a complaint: {result.stderr.strip()[:300]}")
     except subprocess.TimeoutExpired:
         log.warning(f"on-deliver timeout after {ON_DELIVER_TIMEOUT}s")

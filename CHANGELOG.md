@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.17.1 — Every silent failure the second review could find
+
+- **Problem:** review of v0.17 (2026-09-16). (1) `chime.ps1` skipped its whole
+  policy block when `chime-policy.py` was missing — silently back on v0.15
+  rules on the one deployment that is Windows. (2) A state path the listener
+  could not write (or lock), or a bare relative one, switched the cooldown
+  off with no complaint; `makedirs("")` raised on the bare name. (3) On
+  Windows `msvcrt.LK_LOCK` retries at one-second granularity, ten times,
+  then raises — a burst of bells stalled for seconds and a loser past ten
+  tries went unlocked; the lock was also taken with the cooldown off.
+  (4) The listener's new warning fired on ANY stderr from an operator's own
+  bell command, contradicting "output is ignored". Minor: an uncaught
+  exception exited 1 (the `&&` chain has no fail-open of its own);
+  `COOLDOWN=inf` silenced the bell forever; the burst test caught the old
+  race only about half the time.
+- **Fix:** `chime.ps1` complains when the policy file is missing. Lock and
+  write failures are folded into the complaint; bare relative paths work;
+  the lock is only taken when a cooldown is set. Windows polls `LK_NBLCK`
+  every 20 ms with a 5 s deadline. The listener warns only on stderr lines
+  starting `chime-policy`. `main()` catches everything and rings. Non-finite
+  cooldown is a complaint. The burst test runs five bursts.
+- **Tests:** unwritable dir + bare relative state path ring and complain;
+  chatty operator bell does NOT warn; crash on undecodable stdin rings.
+
 ## v0.17 — The bell takes turns, and complains out loud
 
 - **Problem:** code review of v0.16 (2026-09-16), findings verified by

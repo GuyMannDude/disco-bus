@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
 import re
 import sys
@@ -50,26 +51,43 @@ def default_state_path() -> str:
     return os.path.join(base, "disco-bus", "chime-last-ring")
 
 
+def _ensure_dir(path: str) -> None:
+    d = os.path.dirname(path)
+    if d:  # a bare relative name lives in the cwd; makedirs("") would raise
+        os.makedirs(d, exist_ok=True)
+
+
 @contextlib.contextmanager
-def state_lock(path: str):
+def state_lock(path: str, complaints: list[str] | None = None):
     """Exclusive lock on <path>.lock across the whole read-decide-write, so
     three listeners (or three threads of one) landing letters in the same
     second agree on who rang. v0.17: unlocked, five concurrent bells rang
-    three times. Cannot lock = proceed unlocked — a bell that cannot take
-    turns still rings."""
+    three times. Cannot lock = proceed unlocked AND say so — a bell that
+    cannot take turns still rings, but the journal learns why it may double."""
     fh = None
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _ensure_dir(path)
         fh = open(path + ".lock", "a+")
         if os.name == "nt":
             import msvcrt
+            # LK_LOCK retries at ONE-SECOND granularity; poll a non-blocking
+            # lock instead so a burst of bells settles in milliseconds
             fh.seek(0)
-            msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+            deadline = time.monotonic() + 5.0
+            while True:
+                try:
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.02)
         else:
             import fcntl
             fcntl.flock(fh, fcntl.LOCK_EX)
-    except OSError:
-        pass
+    except OSError as e:
+        if complaints is not None:
+            complaints.append(f"could not lock {path}.lock ({e}): decided unlocked, a burst may double-ring")
     try:
         yield
     finally:
@@ -93,23 +111,27 @@ def read_last_ring(path: str) -> float:
         return 0.0
 
 
-def write_last_ring(path: str, now: float) -> None:
+def write_last_ring(path: str, now: float, complaints: list[str] | None = None) -> None:
     tmp = f"{path}.{os.getpid()}.tmp"
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _ensure_dir(path)
         with open(tmp, "w", encoding="utf-8") as fh:
             fh.write(f"{now:.3f}\n")
         os.replace(tmp, path)  # a reader never sees a half-written stamp
-    except OSError:
+    except OSError as e:
         with contextlib.suppress(OSError):
-            os.remove(tmp)  # a bell that cannot remember still rings
+            os.remove(tmp)
+        if complaints is not None:  # a bell that cannot remember still rings, but says so
+            complaints.append(f"could not write {path} ({e}): cooldown cannot remember this ring")
 
 
 def decide(env: dict, envelope: dict | None, now: float, state_path: str) -> tuple[bool, str, str]:
-    """(ring?, reason, complaint). Pure apart from the state file. A
-    complaint is non-empty when the bell rang but a setting was unreadable."""
+    """(ring?, reason, complaint). Pure apart from the state file. The
+    complaint is non-empty when a setting was unreadable or the state file
+    could not be locked/written — the bell still decides, but out loud."""
     if envelope is None:
         return True, "unparseable envelope: ring", ""
+    complaints: list[str] = []
     subject = str(envelope.get("subject") or "")
     sender = str(envelope.get("from") or "")
     wake_re = env.get("DISCOBUS_CHIME_WAKE_RE") or DEFAULT_WAKE_RE
@@ -118,31 +140,42 @@ def decide(env: dict, envelope: dict | None, now: float, state_path: str) -> tup
     except re.error:
         wake = re.search(DEFAULT_WAKE_RE, subject) is not None
     if wake:
-        write_last_ring(state_path, now)
-        return True, "wake marker in subject", ""
+        write_last_ring(state_path, now, complaints)
+        return True, "wake marker in subject", "; ".join(complaints)
     skip = {s.strip().lower() for s in (env.get("DISCOBUS_CHIME_SKIP_FROM") or "").split(",") if s.strip()}
     if sender.lower() in skip:
         return False, f"sender {sender} is on the skip list", ""
-    complaint = ""
     raw_cooldown = env.get("DISCOBUS_CHIME_COOLDOWN") or "0"
     try:
         cooldown = float(raw_cooldown)
+        if not math.isfinite(cooldown):
+            raise ValueError(raw_cooldown)  # inf would silence the bell forever
     except ValueError:
         cooldown = 0.0
-        complaint = (f"bad DISCOBUS_CHIME_COOLDOWN {raw_cooldown!r}: cooldown OFF "
-                     "(an inline # comment in an env file is part of the value)")
-    with state_lock(state_path):
-        if cooldown > 0:
-            since = now - read_last_ring(state_path)
-            # a stamp a few seconds in the FUTURE is the bell that beat us to
-            # the lock, not a broken clock: inside the window either way
-            if abs(since) < cooldown:
-                return False, f"cooldown: rang {abs(since):.0f}s ago, window {cooldown:.0f}s", complaint
-        write_last_ring(state_path, now)
-    return True, "ring", complaint
+        complaints.append(f"bad DISCOBUS_CHIME_COOLDOWN {raw_cooldown!r}: cooldown OFF "
+                          "(an inline # comment in an env file is part of the value)")
+    if cooldown <= 0:
+        write_last_ring(state_path, now)  # no window to guard: no lock, no complaint
+        return True, "ring", "; ".join(complaints)
+    with state_lock(state_path, complaints):
+        since = now - read_last_ring(state_path)
+        # a stamp AHEAD of us (up to a window) is the bell that beat us to
+        # the lock, not a broken clock: inside the window either way
+        if abs(since) < cooldown:
+            return False, f"cooldown: rang {abs(since):.0f}s ago, window {cooldown:.0f}s", "; ".join(complaints)
+        write_last_ring(state_path, now, complaints)
+    return True, "ring", "; ".join(complaints)
 
 
 def main() -> int:
+    try:
+        return _main()
+    except Exception as e:  # the promise is 0 or 3, nothing else — Windows chains && on it
+        print(f"chime-policy: crashed ({e!r}): rang", file=sys.stderr)
+        return RING
+
+
+def _main() -> int:
     raw = sys.stdin.read()
     try:
         envelope = json.loads(raw) if raw.strip() else None
