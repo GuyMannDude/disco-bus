@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.17.2 — The last two quiet fallbacks
+
+- **Problem:** third review (2026-09-16). Both wrappers still fell back
+  silently when there was NO python on PATH — the other operand of the
+  condition v0.17.1 fixed, and on Windows `python` is often just the Store
+  alias or absent. A bad `DISCOBUS_CHIME_WAKE_RE` fell back to the default
+  wake words with no complaint, so an operator's custom wake word could
+  silently never fire. A negative cooldown disabled the window silently.
+- **Fix:** `chime.sh` / `chime.ps1` ring AND write `chime-policy needs
+  python...: rang without policy` when no interpreter is found. A bad wake
+  regex and a negative cooldown are complaints. Module docstring caught up.
+- **Tests:** the no-python case asserts the complaint; bad wake regex and
+  `-5` cooldown assert theirs.
+
 ## v0.17.1 — Every silent failure the second review could find
 
 - **Problem:** review of v0.17 (2026-09-16). (1) `chime.ps1` skipped its whole

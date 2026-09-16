@@ -79,7 +79,8 @@ def test_wake_marker_rings_through_skip_list_and_cooldown(tmp_path):
     assert ring and "wake" in why
     assert cp.decide(_env(), {"from": "beta", "subject": "urgent-ish"}, 1002.0, st)[0] is False  # lower-case, glued: not a marker
     assert cp.decide(_env(DISCOBUS_CHIME_WAKE_RE="(?i)poke"), {"from": "beta", "subject": "a Poke please"}, 1003.0, st)[0]
-    assert cp.decide(_env(DISCOBUS_CHIME_WAKE_RE="(["), {"from": "beta", "subject": "URGENT"}, 1004.0, st)[0]  # bad regex -> default
+    ring, _, complaint = cp.decide(_env(DISCOBUS_CHIME_WAKE_RE="(["), {"from": "beta", "subject": "URGENT"}, 1004.0, st)
+    assert ring and "DISCOBUS_CHIME_WAKE_RE" in complaint   # bad regex -> default, and it says so
 
 
 def test_bad_cooldown_rings_and_complains_out_loud(tmp_path):
@@ -88,7 +89,7 @@ def test_bad_cooldown_rings_and_complains_out_loud(tmp_path):
     assert ring and why == "ring" and "DISCOBUS_CHIME_COOLDOWN" in complaint
     r = _run_policy(_letter("beta", "y"), _proc_env(st, DISCOBUS_CHIME_COOLDOWN="90   # seconds"))
     assert r.returncode == 0 and "chime-policy: bad DISCOBUS_CHIME_COOLDOWN" in r.stderr
-    for bad in ("inf", "nan"):   # would silence the bell forever / disable it silently
+    for bad in ("inf", "nan", "-5"):   # forever-silent / silently-off / a typo
         ring, _, complaint = cp.decide(_env(DISCOBUS_CHIME_COOLDOWN=bad), {"from": "beta", "subject": "x"}, 1000.0, st)
         assert ring and "DISCOBUS_CHIME_COOLDOWN" in complaint
 
@@ -177,10 +178,10 @@ def test_chime_sh_passes_silence_drains_without_python_and_complains_without_pol
     shutil.copy(CHIME_SH, lonely / "chime.sh")
     r = run(lonely / "chime.sh", _letter("feed-bot", "x"), env)
     assert r.returncode == 0 and "rang without policy" in r.stderr
-    # no python3 at all = v0.15: drain stdin, ring, quiet
+    # no python3 at all: drain stdin, ring, and say so
     (tools / "python3").unlink()
     r = run(CHIME_SH, _letter("feed-bot", "x"), env)
-    assert (r.returncode, r.stderr) == (0, "")
+    assert r.returncode == 0 and "needs python3" in r.stderr
 
 
 def _reload_listener(monkeypatch, on_deliver: str):

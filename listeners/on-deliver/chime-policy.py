@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Disco-Bus bell policy (v0.16, hardened v0.17): should THIS letter ring the human?
+"""Disco-Bus bell policy (v0.16, hardened v0.17.x): should THIS letter ring the human?
 
 Reads the envelope JSON on stdin (what DISCOBUS_ON_DELIVER hands every
 bell) and answers with an exit code the chime scripts and the listener
@@ -9,9 +9,10 @@ both understand:
     3  silent by policy (the listener logs it at info, not as a failure)
 
 Nothing else, ever — Windows chains `python chime-policy.py && schtasks ...`
-on that promise. Stderr carries the reason when silent, and a complaint when
-the bell rang on a setting it could not read (exit 0 + stderr = the listener
-logs a warning). Rules, all optional, all from the env:
+on that promise. Stderr carries the reason when silent, and a `chime-policy:`
+complaint when the bell decided on a setting it could not read or a state
+file it could not lock or write (exit 0 + that line = the listener logs a
+warning). Rules, all optional, all from the env:
 
   DISCOBUS_CHIME_SKIP_FROM   comma-separated senders that never ring
                              (robots: a security feed, a cron reporter...);
@@ -137,8 +138,9 @@ def decide(env: dict, envelope: dict | None, now: float, state_path: str) -> tup
     wake_re = env.get("DISCOBUS_CHIME_WAKE_RE") or DEFAULT_WAKE_RE
     try:
         wake = re.search(wake_re, subject) is not None
-    except re.error:
+    except re.error as e:
         wake = re.search(DEFAULT_WAKE_RE, subject) is not None
+        complaints.append(f"bad DISCOBUS_CHIME_WAKE_RE {wake_re!r} ({e}): using the default {DEFAULT_WAKE_RE!r}")
     if wake:
         write_last_ring(state_path, now, complaints)
         return True, "wake marker in subject", "; ".join(complaints)
@@ -148,8 +150,8 @@ def decide(env: dict, envelope: dict | None, now: float, state_path: str) -> tup
     raw_cooldown = env.get("DISCOBUS_CHIME_COOLDOWN") or "0"
     try:
         cooldown = float(raw_cooldown)
-        if not math.isfinite(cooldown):
-            raise ValueError(raw_cooldown)  # inf would silence the bell forever
+        if not math.isfinite(cooldown) or cooldown < 0:
+            raise ValueError(raw_cooldown)  # inf would silence the bell forever; -5 is a typo
     except ValueError:
         cooldown = 0.0
         complaints.append(f"bad DISCOBUS_CHIME_COOLDOWN {raw_cooldown!r}: cooldown OFF "

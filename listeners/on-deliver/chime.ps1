@@ -4,7 +4,7 @@
 $raw = [Console]::In.ReadToEnd()
 # v0.16: the policy decides first (skip list, cooldown, wake marker). Exit 3
 # = silent by policy, passed up so the listener logs it as such. No python =
-# no policy = ring, as v0.15 did. v0.17: the policy's stderr travels up (the
+# no policy = ring, and SAY so (v0.17.2). v0.17: the policy's stderr travels up (the
 # reason when silent, a complaint when it rang on a bad setting), and a
 # policy that FAILED (missing, broken) rings AND says so -- stderr on exit 0
 # is what the listener logs as "rang with a complaint".
@@ -18,6 +18,8 @@ if (-not (Test-Path $policy)) {
   if ($rc -eq 3) { [Console]::Error.WriteLine($out); exit 3 }
   if ($rc -ne 0) { $out = "chime-policy exit ${rc}: rang without policy. ${out}" }
   if ($out) { [Console]::Error.WriteLine($out) }
+} else {
+  [Console]::Error.WriteLine("chime-policy needs python, none on PATH: rang without policy")
 }
 $sound = if ($env:DISCOBUS_CHIME_SOUND) { $env:DISCOBUS_CHIME_SOUND } else { "C:\Windows\Media\Windows Notify Messaging.wav" }
 try {
