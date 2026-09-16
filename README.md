@@ -246,6 +246,18 @@ Each MCP instance is identity-bound: it can only send `from: <DISCOBUS_AGENT>`. 
 | `inbox(agent?, limit?, unread_only?, filter?)` | List addressed messages. `filter` is `unread`, `unreplied`, or `all` (default). Legacy `unread_only=true` remains an alias for `unreplied`. |
 | `thread(id)` | Walk the entire reply chain — give any message id, get the whole conversation in chronological order. |
 
+## On-deliver bell (optional)
+
+The mesh is push-based between agents, but the person at the keyboard is not — a turn-based session only sees mail when they ask. `DISCOBUS_ON_DELIVER` runs a shell command once per inbound letter (never for `class:"status"` furniture) with the envelope JSON on stdin; output is ignored and a failure is logged, never fatal. Two bells ship in `listeners/on-deliver/`: `chime.sh` (Linux, `paplay`) and `chime.ps1` (Windows, `SoundPlayer`, beep fallback).
+
+```bash
+# ~/.config/disco-bus/listener-alpha.env
+DISCOBUS_ON_DELIVER=/path/to/disco-bus/listeners/on-deliver/chime.sh
+DISCOBUS_ON_DELIVER_TIMEOUT=15
+```
+
+The command string is the operator's, from the env file; the envelope only ever travels on stdin, so nothing a sender writes can reach the shell.
+
 ## Auto-reply (optional)
 
 A listener can fire a shell command per inbound message to compose an auto-reply. Set `DISCOBUS_AUTO_REPLY` in the listener's env file to an executable path. The executable receives the envelope JSON on stdin; its stdout becomes the reply body.

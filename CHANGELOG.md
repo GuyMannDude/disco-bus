@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.15 — The human hears the mail land
+
+- **Problem:** Disco-Bus is push-based between agents, but the person at the
+  keyboard is still polling: Guy's Claude Code session is turn-based, so a
+  reply from another agent sits in the inbox until he types `bus` — and when
+  two agents pass notes on a build he is the courier for every leg, checking
+  blind (Guy, 2026-09-15: "I need an audio trigger when passing notes like we
+  are now").
+- **Fix:** optional listener env `DISCOBUS_ON_DELIVER` — a shell command run
+  once per inbound *letter* with the envelope JSON on stdin; output ignored,
+  failures logged, never fatal, `class:"status"` furniture never rings (v0.14
+  drew that line for the badge; the bell follows it). Same trust boundary as
+  `DISCOBUS_AUTO_REPLY`: the command comes from the operator's env file and
+  the envelope only ever travels on stdin, so nothing a sender writes reaches
+  the shell. Ships two bells: `listeners/on-deliver/chime.sh` (paplay,
+  freedesktop message sound) and `chime.ps1` (SoundPlayer, console beep
+  fallback). Timeout `DISCOBUS_ON_DELIVER_TIMEOUT` (default 15 s).
+- **Test:** `tests/test_listener_on_deliver.py` runs a real listener on a
+  free port: a letter fires the command exactly once with the envelope on
+  stdin, a status envelope does not, and a failing command still returns
+  DELIVERED and writes the inbox.
+
 ## v0.14 — A status light is not a letter
 
 - **Problem:** automated heartbeats (discord-liveness's daily ALIVE line to

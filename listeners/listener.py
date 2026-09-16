@@ -21,6 +21,13 @@ Configured via env:
                        Skipped if the incoming envelope already has reply_to
                        (avoids auto-reply loops).
   DISCOBUS_AUTO_REPLY_TIMEOUT  seconds (default 120)
+  DISCOBUS_ON_DELIVER  optional. A shell command run once per inbound letter
+                       (not for class:"status" furniture), envelope JSON on
+                       stdin, output ignored, failures logged and never fatal.
+                       The human-side bell: point it at a chime script so the
+                       person at the keyboard hears mail land without polling
+                       (listeners/on-deliver/chime.sh, chime.ps1).
+  DISCOBUS_ON_DELIVER_TIMEOUT  seconds (default 15)
 
 Behavior:
   - Always: write envelope to <inbox>/<agent>/<tracking_id>.json (atomic)
@@ -55,6 +62,8 @@ INBOX_ROOT = Path(
 )
 AUTO_REPLY_CMD = os.environ.get("DISCOBUS_AUTO_REPLY", "").strip() or None
 AUTO_REPLY_TIMEOUT = int(os.environ.get("DISCOBUS_AUTO_REPLY_TIMEOUT", "120"))
+ON_DELIVER_CMD = os.environ.get("DISCOBUS_ON_DELIVER", "").strip() or None
+ON_DELIVER_TIMEOUT = int(os.environ.get("DISCOBUS_ON_DELIVER_TIMEOUT", "15"))
 
 MESH_VERSION = "0.5"
 # Bind host. Defaults to loopback (single-machine setups). Set DISCOBUS_LISTEN_HOST
@@ -112,6 +121,29 @@ def run_auto_reply(envelope: dict) -> dict:
         return {"error": str(e)[:500]}
 
 
+def run_on_deliver(envelope: dict) -> None:
+    """Fire DISCOBUS_ON_DELIVER for one letter. The command string comes from
+    the operator's env file (same trust as DISCOBUS_AUTO_REPLY); the envelope
+    only ever travels on stdin, never into the command line, so nothing a
+    sender writes can reach the shell."""
+    assert ON_DELIVER_CMD is not None
+    try:
+        result = subprocess.run(
+            ON_DELIVER_CMD,
+            shell=True,
+            input=json.dumps(envelope),
+            capture_output=True,
+            text=True,
+            timeout=ON_DELIVER_TIMEOUT,
+        )
+        if result.returncode != 0:
+            log.warning(f"on-deliver exit {result.returncode}: {result.stderr.strip()[:300]}")
+    except subprocess.TimeoutExpired:
+        log.warning(f"on-deliver timeout after {ON_DELIVER_TIMEOUT}s")
+    except Exception as e:
+        log.warning(f"on-deliver failed: {str(e)[:300]}")
+
+
 def post_reply(envelope: dict, reply_body: dict) -> None:
     payload = {
         "mesh_version": MESH_VERSION,
@@ -140,6 +172,10 @@ def handle(envelope: dict) -> None:
     except Exception as e:
         log.error(f"inbox write failed: {e}")
         return
+
+    # Optional bell for the human: a letter rings, a status light does not.
+    if ON_DELIVER_CMD and envelope.get("class") != "status":
+        run_on_deliver(envelope)
 
     # Optional auto-reply: skip if envelope is itself a reply (avoid loops)
     if AUTO_REPLY_CMD and envelope.get("reply_to") is None:
@@ -200,6 +236,8 @@ def main():
         log.info(f"auto-reply enabled: {AUTO_REPLY_CMD} (timeout {AUTO_REPLY_TIMEOUT}s)")
     else:
         log.info("auto-reply disabled (inbox-only mode)")
+    if ON_DELIVER_CMD:
+        log.info(f"on-deliver bell enabled: {ON_DELIVER_CMD} (timeout {ON_DELIVER_TIMEOUT}s)")
     ThreadingHTTPServer((HOST, PORT), InboxHandler).serve_forever()
 
 
