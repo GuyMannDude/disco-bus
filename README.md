@@ -263,13 +263,18 @@ The command string is the operator's, from the env file; the envelope only ever 
 Both chime scripts hand the envelope to `chime-policy.py` first, so the person at the keyboard hears what needs a person and nothing else. All knobs are optional, all in the listener env file:
 
 ```bash
-DISCOBUS_CHIME_SKIP_FROM=feed-bot,cron-bot   # robots that never ring
-DISCOBUS_CHIME_COOLDOWN=90                   # seconds: a burst rings once, later letters land silently
-DISCOBUS_CHIME_WAKE_RE='\b(WAKE|URGENT)\b'   # subject marker that rings THROUGH the skip list and the cooldown (this is the default)
-DISCOBUS_CHIME_STATE=~/.cache/disco-bus/chime-last-ring   # one file per machine, so three inboxes share one bell
+# robots that never ring (case-insensitive). Comments go on their OWN line:
+# systemd keeps an inline "# ..." as part of the value.
+DISCOBUS_CHIME_SKIP_FROM=feed-bot,cron-bot
+# seconds: a burst rings once, later letters land silently
+DISCOBUS_CHIME_COOLDOWN=90
+# subject marker that rings THROUGH the skip list and the cooldown (this is the default)
+DISCOBUS_CHIME_WAKE_RE='\b(WAKE|URGENT)\b'
+# one file per machine, so three inboxes share one bell (`~` is expanded)
+DISCOBUS_CHIME_STATE=~/.cache/disco-bus/chime-last-ring
 ```
 
-The policy exits `0` to ring and `3` for silent-by-policy; the listener logs a `3` at info, not as a failure. A letter the policy cannot parse rings — a confused bell must never be a silent one. On Windows, an on-deliver command can chain the policy in front of whatever rings: `python chime-policy.py && schtasks /run /tn "Bus Chime"`.
+The policy exits `0` to ring and `3` for silent-by-policy; the listener logs a `3` at info, not as a failure. A letter the policy cannot parse rings — a confused bell must never be a silent one. A bell that rang *without* its policy (script missing or broken, a setting it could not read) still rings, and the listener logs `on-deliver rang with a complaint` so the journal says why robots are ringing again. Listeners sharing a state file take turns through `<state>.lock`, so a burst across three inboxes rings once. On Windows, an on-deliver command can chain the policy in front of whatever rings: `python chime-policy.py && schtasks /run /tn "Bus Chime"`.
 
 ## Auto-reply (optional)
 

@@ -12,6 +12,10 @@ if command -v python3 >/dev/null 2>&1; then
   python3 "$HERE/chime-policy.py"
   rc=$?
   [ "$rc" -eq 3 ] && exit 3
+  # v0.17: any other non-zero = the policy itself failed (missing, broken).
+  # Ring anyway, but SAY so: stderr on exit 0 is what the listener logs as
+  # "rang with a complaint". A bell quietly back on v0.15 rules is the trap.
+  [ "$rc" -ne 0 ] && echo "chime-policy exit $rc: rang without policy" >&2
 else
   cat >/dev/null
 fi

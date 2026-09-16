@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.17 — The bell takes turns, and complains out loud
+
+- **Problem:** code review of v0.16 (2026-09-16), findings verified by
+  running them. (1) The shared cooldown was read → decide → write on one
+  file with no lock, across three listener processes and a thread per
+  letter: five concurrent bells rang three times — the burst case the
+  feature exists for. The write also truncated in place, so a reader could
+  see an empty stamp and ring. (2) `DISCOBUS_CHIME_STATE=~/...` as the README
+  showed was never `~`-expanded — each listener got a private state file
+  under a literal `~/` directory. (3) The README's inline `# comments` are
+  part of the value under systemd: cooldown silently OFF, one robot ringing
+  forever. (4) The skip list matched senders case-sensitively while the bus
+  canonicalises names case-insensitively. (5) A missing or broken
+  `chime-policy.py` fell through to v0.15 behaviour with nothing in the
+  journal. (6) The shell wrappers had no tests, and the policy test's bare
+  `env` would not start a process on Windows.
+- **Fix:** `chime-policy.py` holds `<state>.lock` (flock / msvcrt) across
+  the read-decide-write and writes the stamp via temp + `os.replace`; a stamp
+  a few seconds in the future counts as inside the window (the bell that beat
+  us to the lock). `~` expands. Skip list lower-cases both sides. Exit codes
+  stay `0`/`3` only (Windows chains on `&&`); stderr now carries the reason
+  when silent and a complaint when it rang on an unreadable setting.
+  `chime.sh` / `chime.ps1` ring on a failed policy AND say so on stderr; the
+  listener logs exit 0 + stderr as `on-deliver rang with a complaint`. README
+  block: comments on their own lines.
+- **Tests:** `tests/test_chime_policy.py` — eight concurrent bells ring
+  exactly once; case-insensitive skip; bad cooldown rings + complains; `~`
+  expansion; `chime.sh` passes silence, drains without python, complains
+  without its policy; listener warns on the complaint.
+
 ## v0.16 — The bell learns who to ring for
 
 - **Problem:** v0.15 rang once per letter, every letter. In practice a fifth
