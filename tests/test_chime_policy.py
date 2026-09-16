@@ -112,8 +112,11 @@ def test_state_file_it_cannot_write_or_lock_rings_and_complains(tmp_path, monkey
 
 
 def test_a_crash_still_rings_with_exit_zero(tmp_path):
-    # undecodable stdin: the only exit codes are 0 and 3, Windows chains && on it
-    r = subprocess.run([sys.executable, str(POLICY)], input=b"\xff\xfe", capture_output=True, env=_proc_env(str(tmp_path / "last")))
+    # undecodable stdin: the only exit codes are 0 and 3, Windows chains && on it.
+    # A piped stdin on Windows decodes with surrogateescape and never raises (CC2, 2026-09-16),
+    # so force strict decoding: the provocation must be real on every platform.
+    env = {**_proc_env(str(tmp_path / "last")), "PYTHONIOENCODING": "utf-8:strict"}
+    r = subprocess.run([sys.executable, str(POLICY)], input=b"\xff\xfe", capture_output=True, env=env)
     assert r.returncode == 0 and b"chime-policy: crashed" in r.stderr
 
 
