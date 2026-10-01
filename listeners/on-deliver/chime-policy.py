@@ -23,6 +23,15 @@ warning). Rules, all optional, all from the env:
   DISCOBUS_CHIME_WAKE_RE     regex on the subject that rings ANYWAY —
                              through the skip list and the cooldown.
                              Default: the words WAKE or URGENT, upper-case.
+  DISCOBUS_CHIME_QUIET_ROOT_RE  regex on the subject of the letter's thread
+                             ROOT. A thread whose opener matches is a
+                             conversation between agents (an `^ORDER:`
+                             rally): every letter in it lands silently,
+                             and only the wake marker rings through. The
+                             root is the letter itself when it has no
+                             reply_to, else fetched from the dispatcher
+                             (DISCOBUS_DISPATCHER, /mesh/thread/<id>).
+                             Cannot fetch = ring and complain. Default: off.
   DISCOBUS_CHIME_STATE       file holding the last ring time (`~` expands).
                              Default is one file per machine (not per
                              listener), so a person watching three inboxes
@@ -43,7 +52,7 @@ import sys
 import time
 
 RING, SILENT = 0, 3
-DEFAULT_WAKE_RE = r"\b(WAKE|URGENT)\b"
+DEFAULT_WAKE_RE = r"\b(WAKE|URGENT|CHAIN-BROKEN)\b"
 
 
 def default_state_path() -> str:
@@ -126,7 +135,36 @@ def write_last_ring(path: str, now: float, complaints: list[str] | None = None) 
             complaints.append(f"could not write {path} ({e}): cooldown cannot remember this ring")
 
 
-def decide(env: dict, envelope: dict | None, now: float, state_path: str) -> tuple[bool, str, str]:
+def fetch_root_subject(dispatcher: str, reply_to: int, timeout: float = 2.0) -> str:
+    """Subject of the thread root, via the dispatcher's /mesh/thread/<id>.
+    Raises on any failure; the caller decides out loud."""
+    import urllib.request
+    url = f"{dispatcher.rstrip('/')}/mesh/thread/{int(reply_to)}"
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    root_id = data["root_id"]
+    for m in data["messages"]:
+        if m.get("id") == root_id:
+            return str(m.get("subject") or "")
+    raise KeyError(f"root {root_id} missing from thread payload")
+
+
+def thread_root_subject(env: dict, envelope: dict, complaints: list[str], fetch=fetch_root_subject) -> str | None:
+    """The root's subject: the letter's own when it opens a thread, else one
+    local GET. None = could not learn it (complaint appended): the quiet rule
+    then does not apply and the letter falls through to the normal rules."""
+    reply_to = envelope.get("reply_to")
+    if reply_to is None:
+        return str(envelope.get("subject") or "")
+    dispatcher = env.get("DISCOBUS_DISPATCHER") or "http://127.0.0.1:9100"
+    try:
+        return fetch(dispatcher, reply_to)
+    except Exception as e:  # network, 404, bad JSON: all the same to a bell
+        complaints.append(f"could not fetch thread root of #{reply_to} from {dispatcher} ({e!r}): quiet rule skipped, rang")
+        return None
+
+
+def decide(env: dict, envelope: dict | None, now: float, state_path: str, fetch=fetch_root_subject) -> tuple[bool, str, str]:
     """(ring?, reason, complaint). Pure apart from the state file. The
     complaint is non-empty when a setting was unreadable or the state file
     could not be locked/written — the bell still decides, but out loud."""
@@ -147,6 +185,15 @@ def decide(env: dict, envelope: dict | None, now: float, state_path: str) -> tup
     skip = {s.strip().lower() for s in (env.get("DISCOBUS_CHIME_SKIP_FROM") or "").split(",") if s.strip()}
     if sender.lower() in skip:
         return False, f"sender {sender} is on the skip list", ""
+    quiet_re = env.get("DISCOBUS_CHIME_QUIET_ROOT_RE") or ""
+    if quiet_re:
+        root = thread_root_subject(env, envelope, complaints, fetch)
+        if root is not None:
+            try:
+                if re.search(quiet_re, root):
+                    return False, f"quiet thread: root subject {root[:60]!r} matches {quiet_re!r}", "; ".join(complaints)
+            except re.error as e:
+                complaints.append(f"bad DISCOBUS_CHIME_QUIET_ROOT_RE {quiet_re!r} ({e}): quiet rule OFF")
     raw_cooldown = env.get("DISCOBUS_CHIME_COOLDOWN") or "0"
     try:
         cooldown = float(raw_cooldown)

@@ -272,6 +272,10 @@ DISCOBUS_CHIME_COOLDOWN=90
 DISCOBUS_CHIME_WAKE_RE='\b(WAKE|URGENT)\b'
 # one file per machine, so three inboxes share one bell (`~` is expanded)
 DISCOBUS_CHIME_STATE=~/.cache/disco-bus/chime-last-ring
+# v0.18.1: a thread whose ROOT subject matches is agent-to-agent traffic and lands
+# silently (the root is fetched from DISCOBUS_DISPATCHER when the letter is a reply).
+# The wake marker — now also CHAIN-BROKEN — still rings through it. Default: off.
+DISCOBUS_CHIME_QUIET_ROOT_RE='^ORDER:'
 ```
 
 The policy exits `0` to ring and `3` for silent-by-policy; the listener logs a `3` at info, not as a failure. A letter the policy cannot parse rings — a confused bell must never be a silent one. A bell that rang *without* its policy (script missing or broken), on a setting it could not read, or on a state file it could not lock or write, still rings, and the listener logs `on-deliver rang with a complaint` so the journal says why robots are ringing again or a burst doubled. Listeners sharing a state file take turns through `<state>.lock`, so a burst across three inboxes rings once. On Windows, an on-deliver command can chain the policy in front of whatever rings: `python chime-policy.py && schtasks /run /tn "Bus Chime"`.

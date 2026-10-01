@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.18.1 — A conversation between agents is quiet; a broken chain rings
+
+- **Problem:** with the bell on every letter, a timer-driven order thread
+  (opener, ticks, replies, close) rang the human a dozen times for a
+  conversation that needed no human. The operator's rule: silent while the
+  chain runs, a bell only when the chain breaks.
+- **Fix:** `DISCOBUS_CHIME_QUIET_ROOT_RE` — a regex on the subject of the
+  letter's thread ROOT (the letter itself when it has no `reply_to`, else
+  one local GET to `/mesh/thread/<id>`). A match lands silently. The wake
+  marker still rings through it, and `CHAIN-BROKEN` joins `WAKE` and
+  `URGENT` in the default marker. A root the policy cannot fetch rings and
+  complains (`chime-policy: could not fetch thread root ...`), per the
+  standing rule that a confused bell is never a silent one. Off by default;
+  no fetch happens unless the knob is set.
+- **Also:** `robot.info` version caught up (v0.18.0 shipped without the bump;
+  `test_robot_info_version_matches_changelog` was red).
+
 ## v0.18.0 — A thread fetch is a read
 
 - **Problem:** `read_at` was set only by `ping_read`. The `thread` tool hands

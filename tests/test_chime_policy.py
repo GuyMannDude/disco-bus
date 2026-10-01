@@ -211,3 +211,49 @@ def test_listener_ignores_a_chatty_operator_bell(tmp_path, caplog, monkeypatch):
     with caplog.at_level(logging.INFO):
         listener.run_on_deliver({"from": "beta", "subject": "x"})
     assert not any(r.levelno >= logging.WARNING for r in caplog.records)
+
+# v0.18.1: a thread between agents is quiet; CHAIN-BROKEN rings through everything
+def _quiet(**kw):
+    return _env(DISCOBUS_CHIME_QUIET_ROOT_RE=r"^ORDER:", DISCOBUS_CHIME_COOLDOWN="0", **kw)
+
+
+def test_an_order_opener_lands_silently_and_an_ordinary_letter_rings(tmp_path):
+    st = str(tmp_path / "last")
+    ring, why, c = cp.decide(_quiet(), {"from": "alpha", "subject": "ORDER: fix-gate", "reply_to": None}, 1000.0, st)
+    assert not ring and why.startswith("quiet thread") and c == ""
+    assert cp.decide(_quiet(), {"from": "alpha", "subject": "re-12 ordinary", "reply_to": None}, 1001.0, st)[0]
+
+
+def test_a_reply_inside_an_order_thread_is_quiet_by_its_root(tmp_path):
+    st = str(tmp_path / "last")
+    calls = []
+    def fetch(dispatcher, reply_to):
+        calls.append((dispatcher, reply_to))
+        return "ORDER: fix-gate"
+    env = _quiet(DISCOBUS_DISPATCHER="http://127.0.0.1:9100")
+    ring, why, _ = cp.decide(env, {"from": "beta", "subject": "re: tick 3, still running", "reply_to": 4128}, 1000.0, st, fetch=fetch)
+    assert not ring and "quiet thread" in why
+    assert calls == [("http://127.0.0.1:9100", 4128)]
+    # same reply shape, but the thread was opened by a human-facing letter: rings
+    assert cp.decide(env, {"from": "beta", "subject": "re: tick 3", "reply_to": 77}, 1001.0, st, fetch=lambda d, r: "hello operator")[0]
+
+
+def test_chain_broken_rings_through_the_quiet_thread_and_the_skip_list(tmp_path):
+    st = str(tmp_path / "last")
+    ring, why, _ = cp.decide(_quiet(), {"from": "cron-bot", "subject": "CHAIN-BROKEN: fix-gate — beta silent 3 cycles", "reply_to": 4128}, 1000.0, st, fetch=lambda d, r: "ORDER: fix-gate")
+    assert ring and "wake" in why
+
+
+def test_a_root_it_cannot_fetch_rings_and_complains(tmp_path):
+    st = str(tmp_path / "last")
+    def boom(dispatcher, reply_to):
+        raise OSError("connection refused")
+    ring, why, c = cp.decide(_quiet(), {"from": "beta", "subject": "re: tick", "reply_to": 4128}, 1000.0, st, fetch=boom)
+    assert ring and why == "ring" and "could not fetch thread root" in c
+
+
+def test_quiet_rule_off_by_default_never_fetches(tmp_path):
+    st = str(tmp_path / "last")
+    def boom(dispatcher, reply_to):
+        raise AssertionError("must not be called")
+    assert cp.decide(_env(), {"from": "alpha", "subject": "ORDER: x", "reply_to": 5}, 1000.0, st, fetch=boom)[0]
