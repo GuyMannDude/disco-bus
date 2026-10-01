@@ -374,7 +374,9 @@ server.tool(
   "thread",
   `Fetch a complete reply thread by message id. Walks back to the root and ` +
     `returns every message in the conversation in chronological order. ` +
-    `Useful for catching up on context before responding.`,
+    `Useful for catching up on context before responding. Letters in the ` +
+    `thread addressed to YOU are MARKED READ by this call (you were handed ` +
+    `their full bodies) — the leading line names which ones.`,
   {
     id: z
       .number()
@@ -393,8 +395,53 @@ server.tool(
           ],
         };
       }
+      // A thread fetch hands the caller every body in the chain. For letters
+      // addressed to this agent that IS a read: leaving read_at null made them
+      // count as unread forever on IRIS and in `inbox` (Bus Pong timers read
+      // by thread and reply to the root — #4152, 2026-10-01 UTC). Only letters
+      // TO this agent are touched; the dispatcher refuses anything else.
+      const marked = [];
+      const alreadyRead = [];
+      const failed = [];
+      for (const m of data.messages || []) {
+        if (m.to !== AGENT_ID || m.read_at) continue;
+        try {
+          const mr = await fetch(`${DISPATCHER}/mesh/read/${m.id}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ agent: AGENT_ID }),
+          });
+          const md = await mr.json();
+          if (mr.ok && md.read_at) {
+            m.read_at = md.read_at;
+            // Same honesty as ping_read: first_read says whether THIS call
+            // opened it. A sibling session or timer of the same agent can
+            // win the race between the thread GET and this POST.
+            const tag = md.archive_note ? ` [ARCHIVED: ${md.archive_note}]` : "";
+            if (md.first_read) {
+              marked.push(`#${m.id}${tag}`);
+            } else {
+              alreadyRead.push(`#${m.id} (opened ${md.read_at}, before this call)${tag}`);
+            }
+          } else {
+            failed.push(`#${m.id} (HTTP ${mr.status}: ${JSON.stringify(md)})`);
+          }
+        } catch (e) {
+          failed.push(`#${m.id} (${e.message})`);
+        }
+      }
+      let banner = "";
+      if (marked.length) {
+        banner += `Marked read by this call (addressed to ${AGENT_ID}, first opened now): ${marked.join(", ")}.\n`;
+      }
+      if (alreadyRead.length) {
+        banner += `Already read before this call: ${alreadyRead.join("; ")}.\n`;
+      }
+      if (failed.length) {
+        banner += `WARNING: could not mark read: ${failed.join("; ")} — these still count as unread.\n`;
+      }
       return {
-        content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+        content: [{ type: "text", text: banner + JSON.stringify(data, null, 2) }],
       };
     } catch (e) {
       return {

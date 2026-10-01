@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.18.0 — A thread fetch is a read
+
+- **Problem:** `read_at` was set only by `ping_read`. The `thread` tool hands
+  the caller every full body in the chain, yet left the caller's own letters
+  unread. Bus Pong (doctrine-order-thread, 2026-09-30) made that the normal
+  path: every timer tick reads by `thread` and replies to the root, so every
+  order letter stayed "unread" forever — IRIS showed `Dave #4152` after Dave
+  had already acted on it and replied (2026-10-01 UTC).
+- **Fix:** `thread` now POSTs `/mesh/read/<id>` for each message in the
+  chain where `to` is this instance's agent and `read_at` is null, patches
+  the returned envelope, and says which ids it marked in a leading line.
+  Letters to anyone else are untouched (the dispatcher's recipient check
+  still applies). A mark that fails is named in a `WARNING:` line and the
+  thread is still returned — never silent, never withheld.
+- **Rollout:** MCP-side only; goes live per client at that client's next
+  restart (CC session, Claude Desktop, Hermes gateway; IGOR-2 pulls).
+
 ## v0.17.2 — The last two quiet fallbacks
 
 - **Problem:** third review (2026-09-16). Both wrappers still fell back
