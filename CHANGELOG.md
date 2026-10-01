@@ -15,7 +15,7 @@
   still applies). A mark that fails is named in a `WARNING:` line and the
   thread is still returned — never silent, never withheld.
 - **Rollout:** MCP-side only; goes live per client at that client's next
-  restart (CC session, Claude Desktop, Hermes gateway; IGOR-2 pulls).
+  restart (each client host pulls and restarts its MCP client).
 
 ## v0.17.2 — The last two quiet fallbacks
 
