@@ -234,6 +234,21 @@ def update_state(msg_id: int, state: str, error: str | None = None) -> None:
     log.info(f"#{msg_id} -> {state}{suffix}")
 
 
+def is_sink(cfg: dict | None) -> bool:
+    """A sink is a registry entry with no inbox: `"sink": true`, or the
+    port-9 discard convention every service sender has used since 2026-08-03
+    (sec-watch, cron-report, print-watch, ...). Anything delivered to one
+    FAILS by design — so a reply to a sink is never mail, it is an ack."""
+    if not cfg:
+        return False
+    if cfg.get("sink") is True:
+        return True
+    try:
+        return urllib.parse.urlparse(cfg.get("url", "")).port == 9
+    except ValueError:
+        return False
+
+
 def deliver(envelope: dict, agents: dict) -> None:
     """Background thread. POST envelope to target listener; update state in DB."""
     msg_id = envelope["id"]
@@ -396,6 +411,34 @@ class DispatcherHandler(BaseHTTPRequestHandler):
             ).fetchall()
             conn.close()
             return self._json(200, [row_to_envelope(r) for r in rows])
+
+        # /mesh/acks?since_id=N — ACKED rows (replies to sinks) with id > N,
+        # oldest first, each carrying its parent's id + subject. Read-only
+        # consumer surface for a board that wants "seen AND ruled" for a sink
+        # letter, which the unread view cannot show (a read letter just leaves).
+        if path == "/mesh/acks":
+            qs = urllib.parse.parse_qs(parsed.query)
+            try:
+                since_id = int(qs.get("since_id", ["0"])[0])
+                limit = int(qs.get("limit", [HISTORY_LIMIT_DEFAULT])[0])
+            except ValueError:
+                return self._json(400, {"error": "invalid since_id or limit"})
+            limit = max(1, min(limit, HISTORY_LIMIT_MAX))
+            conn = get_db()
+            rows = conn.execute(
+                """SELECT a.*, p.subject AS parent_subject
+                   FROM messages a LEFT JOIN messages p ON p.id = a.reply_to
+                   WHERE a.state='ACKED' AND a.id>? ORDER BY a.id ASC LIMIT ?""",
+                (since_id, limit),
+            ).fetchall()
+            conn.close()
+            out = []
+            for r in rows:
+                env = row_to_envelope(r)
+                env["ack_of"] = r["reply_to"]
+                env["parent_subject"] = r["parent_subject"]
+                out.append(env)
+            return self._json(200, out)
 
         if path == "/mesh/history":
             qs = urllib.parse.parse_qs(parsed.query)
@@ -1007,6 +1050,57 @@ class DispatcherHandler(BaseHTTPRequestHandler):
         created_at = now_utc()
         body_json = json.dumps(data["body"])
         conn = get_db()
+        # A reply TO a sink is an ACK, not mail (Guy 2026-10-16: "let you ack
+        # for the record"). Sinks have no inbox, so delivering the reply
+        # could only FAIL and light IRIS red for a letter that was handled.
+        # The ack row is born ACKED + swept, never delivered; the parent is
+        # stamped cleared_reason='ack:#<id>' so a board can show "seen and
+        # ruled" instead of "unread again after 20 min". Only the parent's
+        # recipient may ack it — the same lock ping_read has.
+        ack_of = data.get("reply_to") if is_sink(agents.get(data["to"])) else None
+        if ack_of is not None:
+            parent = conn.execute(
+                "SELECT to_agent, from_agent, cleared_reason FROM messages WHERE id=?",
+                (ack_of,),
+            ).fetchone()
+            if parent is None:
+                conn.close()
+                return self._json(404, {"error": f"reply_to #{ack_of} not found"})
+            if parent["to_agent"] != data["from"]:
+                conn.close()
+                return self._json(403, {"error": "only the recipient can ack a sink letter"})
+            if parent["from_agent"] != data["to"]:
+                conn.close()
+                return self._json(400, {"error": f"reply_to #{ack_of} is not from {data['to']}"})
+            if (parent["cleared_reason"] or "").startswith("ack:"):
+                conn.close()
+                return self._json(409, {"error": f"#{ack_of} already acked ({parent['cleared_reason']})"})
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute(
+                """INSERT INTO messages
+                   (mesh_version, tracking_id, from_agent, to_agent, reply_to,
+                    subject, body, state, created_at, cleared_at, cleared_reason)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'ACKED', ?, ?, 'ack')""",
+                (MESH_VERSION, "pending", data["from"], data["to"], ack_of,
+                 data["subject"], body_json, created_at, created_at),
+            )
+            msg_id = cur.lastrowid
+            assert msg_id is not None
+            tracking_id = make_tracking_id(msg_id, created_at)
+            conn.execute("UPDATE messages SET tracking_id=? WHERE id=?", (tracking_id, msg_id))
+            # An ack implies the letter was opened: read_at is stamped too (if
+            # ping_read did not already), so a critical never leaves the unread
+            # view unopened — the lock the status-ping comment above defends.
+            conn.execute(
+                """UPDATE messages SET cleared_at=COALESCE(cleared_at, ?),
+                   read_at=COALESCE(read_at, ?), cleared_reason=? WHERE id=?""",
+                (created_at, created_at, f"ack:#{msg_id}", ack_of),
+            )
+            conn.commit()
+            conn.close()
+            log.info(f"#{msg_id} ACKED #{ack_of} ({data['from']} -> sink {data['to']})")
+            return self._json(202, {"id": msg_id, "tracking_id": tracking_id,
+                                    "state": "ACKED", "ack_of": ack_of})
         # Pause is enforced HERE. BEGIN IMMEDIATE makes pause-check + insert
         # one atomic unit against /mesh/play's delete-and-flush transaction:
         # without it, a ping racing a play could commit a HELD row after play

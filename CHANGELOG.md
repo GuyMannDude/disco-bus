@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.19.0 — A reply to a sink is an ack, not a failure
+
+- **Problem:** sinks (sec-watch, cron-report, print-watch, ...) have no
+  inbox — port 9 is discard — so any reply to one FAILED in delivery and
+  lit the IRIS failed badge for a letter that had in fact been handled
+  (#4308 and every one since). The record stopped at "read"; the verdict
+  had nowhere to live. Guy 2026-10-16: "let you ack for the record".
+- **Fix:** `/mesh/ping` with `reply_to` pointing at a sink's letter is born
+  `ACKED` + swept (`cleared_reason=ack`), never handed to `deliver()`; the
+  parent is stamped `cleared_reason=ack:#<id>`. Only the parent's recipient
+  may ack (403 otherwise, same lock as `ping_read`); the parent must be from
+  that sink (400), exist (404) and not be acked already (409). The parent's
+  `read_at` is stamped too — an ack implies opened, so a critical never
+  leaves the unread view unopened. A fresh letter TO a sink without
+  `reply_to` takes the old path and still FAILS, correctly. Acks ignore
+  pause: nothing is transported.
+- **Sink detection:** `is_sink(cfg)` — `"sink": true` in agents.json, or the
+  port-9 convention every service sender already uses.
+- **Feed:** `GET /mesh/acks?since_id=N` — ACKED rows oldest-first, each with
+  `ack_of` and `parent_subject`, for IRIS's next lap ("seen and ruled").
+- **MCP:** the `ping` receipt for `state=ACKED` says so and names the parent.
+- **Tests:** `dispatcher/test_sink_ack.py` — port and flag detection, born
+  ACKED/swept, parent stamped, absent from `/mesh/failed`, present on
+  `/mesh/acks`, 403/400/404 locks, old path for fresh sink mail, replies
+  between real agents unchanged.
+
 ## v0.18.1 — A conversation between agents is quiet; a broken chain rings
 
 - **Problem:** with the bell on every letter, a timer-driven order thread

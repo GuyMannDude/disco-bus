@@ -134,7 +134,9 @@ server.tool(
       const heldNote =
         data.state === "HELD"
           ? ` — NOT DELIVERED: you are paused; the draft is held on the dispatcher until '\\bus play' (or /mesh/release/${data.id} for a hot item, announced in the open)`
-          : "";
+          : data.state === "ACKED"
+            ? ` — ACK recorded against #${data.ack_of}: ${to} is a sink (no inbox), nothing was delivered and nothing failed; the parent letter now reads cleared_reason=ack:#${data.id}`
+            : "";
       return {
         content: [
           {
