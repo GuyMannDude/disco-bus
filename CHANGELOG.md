@@ -20,6 +20,13 @@
   port-9 convention every service sender already uses.
 - **Feed:** `GET /mesh/acks?since_id=N` — ACKED rows oldest-first, each with
   `ack_of` and `parent_subject`, for IRIS's next lap ("seen and ruled").
+- **Discord trail:** the ack posts ONE line to the sink's channel —
+  `✅ **CC acked** `#4820` `<parent subject>` / > <verdict>` — under the
+  letter sec-watch or CronAlarm already posted there. Routed by a new
+  `"acks": {"<sink>": <channel>, "default": <channel>}` map in
+  `~/.disco-bus/discord-channels.json`; the firehose mirror map stays empty.
+  Verdict = the ack body's `verdict`/`ruling`/`result`/`summary`/`note`,
+  else the body flattened.
 - **MCP:** the `ping` receipt for `state=ACKED` says so and names the parent.
 - **Tests:** `dispatcher/test_sink_ack.py` — port and flag detection, born
   ACKED/swept, parent stamped, absent from `/mesh/failed`, present on

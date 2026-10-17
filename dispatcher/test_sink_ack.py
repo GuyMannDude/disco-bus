@@ -41,6 +41,16 @@ class SinkAckTests(unittest.TestCase):
             "CC": {},
             "Opie": {},
         }))
+        # Never let a test ack reach the real Discord: point the mirror at an
+        # empty channel map and a fake token for the whole test.
+        mirror = dispatcher.discord_mirror
+        self._mirror_saved = (mirror.CHANNELS_FILE, mirror._token, mirror._agent_channels,
+                              mirror._global_channel)
+        mirror.CHANNELS_FILE = Path(self.tempdir.name) / "no-channels.json"
+        mirror.CHANNELS_FILE.write_text(json.dumps({"global": None, "agents": {}}))
+        mirror._token = "test-token"
+        mirror._agent_channels = {}
+        mirror._global_channel = None
         dispatcher.init_db()
         self.server = dispatcher.ThreadingHTTPServer(
             ("127.0.0.1", 0), dispatcher.DispatcherHandler
@@ -53,6 +63,9 @@ class SinkAckTests(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=2)
+        mirror = dispatcher.discord_mirror
+        (mirror.CHANNELS_FILE, mirror._token, mirror._agent_channels,
+         mirror._global_channel) = self._mirror_saved
         self.tempdir.cleanup()
 
     def get_json(self, path):
@@ -86,6 +99,43 @@ class SinkAckTests(unittest.TestCase):
             "subject": "re: handled", "body": {"verdict": "nltk accepted"},
             **extra,
         })
+
+    def test_ack_posts_one_discord_line_to_the_sinks_channel(self):
+        mirror = dispatcher.discord_mirror
+        channels = Path(self.tempdir.name) / "discord-channels.json"
+        channels.write_text(json.dumps({"global": None, "agents": {},
+                                        "acks": {"sec-watch": 111, "default": 222}}))
+        posted = []
+        saved = (mirror.CHANNELS_FILE, mirror._post)
+        mirror.CHANNELS_FILE = channels
+        mirror._post = lambda cid, content: posted.append((cid, content))
+        try:
+            parent = self.ping()
+            self.ack(parent["id"])
+            parent2 = self.ping(**{"from": "print-watch"})
+            self.ack(parent2["id"], to="print-watch", body={"note": "Mini Dude off"})
+            deadline = time.time() + 3
+            while len(posted) < 2 and time.time() < deadline:
+                time.sleep(0.05)
+        finally:
+            mirror.CHANNELS_FILE, mirror._post = saved
+        self.assertEqual(len(posted), 2)
+        self.assertEqual(posted[0][0], 111)
+        self.assertIn(f"`#{parent['id']}`", posted[0][1])
+        self.assertIn("sec-watch:hot: something", posted[0][1])
+        self.assertIn("nltk accepted", posted[0][1])
+        self.assertEqual(posted[1][0], 222)  # print-watch has no row -> default
+        self.assertIn("Mini Dude off", posted[1][1])
+
+    def test_ack_line_shapes(self):
+        mirror = dispatcher.discord_mirror
+        line = mirror.ack_line({"from": "CC", "reply_to": 7, "subject": "re",
+                                "body": {"verdict": "handled"}}, "sec-watch:hot: x")
+        self.assertEqual(line, "✅ **CC acked** `#7` `sec-watch:hot: x`\n> handled")
+        bare = mirror.ack_line({"from": "CC", "reply_to": 7, "subject": "re", "body": {}}, None)
+        self.assertEqual(bare, "✅ **CC acked** `#7` `re`")
+        self.assertEqual(mirror.post_ack({"to": "sec-watch", "from": "CC", "reply_to": 1,
+                                          "subject": "s", "body": {}}, None), None)
 
     def test_is_sink_by_port_and_by_flag(self):
         self.assertTrue(dispatcher.is_sink({"url": "http://127.0.0.1:9/inbox"}))

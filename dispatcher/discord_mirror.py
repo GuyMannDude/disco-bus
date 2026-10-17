@@ -125,6 +125,58 @@ def _post(channel_id: int, content: str) -> None:
         log.warning(f"discord post chan={channel_id}: {e}")
 
 
+def _ack_channels() -> dict:
+    """The "acks" map in the channel file: sink name -> channel id, plus an
+    optional "default". Separate from the (deliberately empty) mirror map so
+    acks can post while the firehose stays off (Phase 5, 2026-07-25)."""
+    try:
+        data = json.loads(CHANNELS_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    acks = data.get("acks")
+    return acks if isinstance(acks, dict) else {}
+
+
+def _verdict(body) -> str:
+    """One line of the ack body for Discord: a named verdict field if the
+    sender gave one, else the body itself, trimmed."""
+    if isinstance(body, dict):
+        for key in ("verdict", "ruling", "result", "summary", "note"):
+            value = body.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    if not body:
+        return ""
+    text = _format_body(body).replace("\n", " ")
+    return " ".join(text.split())
+
+
+def ack_line(ack: dict, parent_subject: str | None) -> str:
+    verdict = _verdict(ack.get("body"))
+    subject = parent_subject or ack.get("subject") or ""
+    head = f"✅ **{ack['from']} acked** `#{ack['reply_to']}` `{subject[:120]}`"
+    if not verdict:
+        return head[:DISCORD_MAX]
+    return f"{head}\n> {verdict[:PAGE_BUDGET - len(head) - 4]}"[:DISCORD_MAX]
+
+
+def post_ack(ack: dict, parent_subject: str | None) -> None:
+    """Post one line for an ACKED envelope to the sink's channel. The sink's
+    letter lives in Discord already (sec-watch posts its digest, CronAlarm
+    its failures), so Guy reads the trail there: letter, then the ack under
+    it (Guy 2026-10-16). Fire-and-forget like mirror()."""
+    try:
+        if not _load():
+            return
+        acks = _ack_channels()
+        cid = acks.get(ack.get("to")) or acks.get("default")
+        if not cid:
+            return
+        _post(int(cid), ack_line(ack, parent_subject))
+    except Exception as e:
+        log.warning(f"discord ack post crashed: {e}")
+
+
 def mirror(envelope: dict) -> None:
     try:
         if not _load():

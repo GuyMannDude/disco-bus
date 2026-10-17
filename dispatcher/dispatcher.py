@@ -1060,7 +1060,7 @@ class DispatcherHandler(BaseHTTPRequestHandler):
         ack_of = data.get("reply_to") if is_sink(agents.get(data["to"])) else None
         if ack_of is not None:
             parent = conn.execute(
-                "SELECT to_agent, from_agent, cleared_reason FROM messages WHERE id=?",
+                "SELECT to_agent, from_agent, cleared_reason, subject FROM messages WHERE id=?",
                 (ack_of,),
             ).fetchone()
             if parent is None:
@@ -1099,6 +1099,12 @@ class DispatcherHandler(BaseHTTPRequestHandler):
             conn.commit()
             conn.close()
             log.info(f"#{msg_id} ACKED #{ack_of} ({data['from']} -> sink {data['to']})")
+            # The trail Guy reads is in Discord: the sink's letter is already
+            # there (sec-watch digest, CronAlarm failure), the ack goes under it.
+            ack_env = {"id": msg_id, "from": data["from"], "to": data["to"],
+                       "reply_to": ack_of, "subject": data["subject"], "body": data["body"]}
+            threading.Thread(target=discord_mirror.post_ack,
+                             args=(ack_env, parent["subject"]), daemon=True).start()
             return self._json(202, {"id": msg_id, "tracking_id": tracking_id,
                                     "state": "ACKED", "ack_of": ack_of})
         # Pause is enforced HERE. BEGIN IMMEDIATE makes pause-check + insert
