@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.19.2 — v0.19.1 crashed the MCP server at startup; fixed, and this time started before shipping
+
+- **Problem:** v0.19.1 passed a full Zod object to the SDK's legacy
+  `server.tool()`, which only takes a raw shape there and treats anything
+  else as misplaced annotations: the process threw on load, so every client
+  that started the bus MCP after 2026-10-19 01:05 PDT got "Connection
+  closed" (Rocky's Hermes gateway from its 08:25 restart until 11:31; the
+  Pocket door likewise). `node --check` passed; it checks syntax, not start.
+- **Fix:** `search` is registered with `server.registerTool()`, whose
+  `inputSchema` accepts a strict Zod object. Verified by a real stdio
+  handshake: `tools/list` shows six tools with `additionalProperties: false`
+  on search, `search(query=…)` answers `unrecognized_keys: ["query"]`, and
+  `search(q=…)` returns results.
+- **Rule:** an MCP server change ships only after a stdio handshake that
+  lists the tools and calls the changed one.
+
 ## v0.19.1 — An unknown search argument is an error, not "everything"
 
 - **Problem:** `search(query="x")` silently dropped the unknown key and
