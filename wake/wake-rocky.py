@@ -13,7 +13,9 @@ HUD = "http://127.0.0.1:3001/api"
 TIMEOUT_S = 170          # listener default is 120; raise DISCOBUS_AUTO_REPLY_TIMEOUT to 180 when wiring
 MAX_PROMPT = 4000        # a letter is a prompt, not a transcript
 PREFIX = ("[WAKE via disco-bus] A letter arrived for you. Reply in plain English, briefly, "
-          "as yourself. Sender: {sender}. Subject: {subject}.\n\n")
+          "as yourself. What you say here IS your bus reply and is posted for you: do NOT call "
+          "the bus ping tool yourself, or the sender gets your answer twice. "
+          "Sender: {sender}. Subject: {subject}.\n\n")
 
 
 def fail(msg, **extra):
