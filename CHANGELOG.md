@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.19.1 — An unknown search argument is an error, not "everything"
+
+- **Problem:** `search(query="x")` silently dropped the unknown key and
+  returned the whole working set — the silent-all twin of the silent zero
+  (Opie #4894, mistook it for a search snag; the real key is `q`).
+- **Fix:** the MCP `search` tool's input is a strict Zod object; an unknown
+  key is rejected with a named error in one call. The other five tools
+  follow in the next pass.
+
 ## v0.19.0 — A reply to a sink is an ack, not a failure
 
 - **Problem:** sinks (sec-watch, cron-report, print-watch, ...) have no
