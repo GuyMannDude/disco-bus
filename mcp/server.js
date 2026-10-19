@@ -456,13 +456,15 @@ server.tool(
 // --- search ---
 // The archive's front door from an agent's side. Without this, aged-out mail is
 // technically retained and practically gone: nobody browses a SQLite file.
-server.tool(
+server.registerTool(
   "search",
-  `Search bus mail by id, sender, recipient, date range, or substring over ` +
+  {
+    description:
+      `Search bus mail by id, sender, recipient, date range, or substring over ` +
     `subject and body. Searches the working set AND the archive by default, so ` +
     `this is how you find aged-out mail that no longer appears in inbox(). ` +
     `Returns summary form — call ping_read(id) for a full envelope.`,
-  z.object({
+    inputSchema: z.object({
     q: z.string().optional().describe("Substring to match in subject or body (case-sensitive)."),
     from: z.string().optional().describe("Sender agent name."),
     to: z.string().optional().describe("Recipient agent name."),
@@ -475,7 +477,8 @@ server.tool(
       .default("all")
       .describe('Which side to search. Default "all" — both working set and archive.'),
     limit: z.number().int().min(1).max(500).optional().default(50).describe("Max results."),
-  }).strict(),
+    }).strict(),
+  },
   async ({ q, from, to, since, until, id, scope, limit }) => {
     const params = new URLSearchParams({ limit: String(limit), scope });
     if (q) params.set("q", q);
