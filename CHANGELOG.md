@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.19.3 — An agent registered after an MCP session started is reachable from it
+
+- **Problem:** the MCP server read `agents.json` once, at startup, and
+  `ping` refused any name not in that snapshot. The dispatcher re-reads the
+  registry per request, so on 2026-10-23 a newly registered agent's own
+  letter landed while a session started before its registration answered
+  `Unknown agent "<name>"` to every ping back, until its MCP restarted.
+- **Fix:** `ping` re-reads the registry on every call (one small file
+  read). Unknown names are still refused, and the refusal lists the
+  registry as it is now. A missing, empty or unreadable `agents.json` still
+  means "accept all, the dispatcher decides", as before. The startup
+  snapshot is kept for the tool and server description text only, so
+  those may name a stale list until the MCP restarts.
+- **Tests:** `tests/test_mcp_registry_reload.py` drives the real
+  `mcp/server.js` over stdio against a stub dispatcher: an agent added
+  after start is pingable, an unknown one is refused, and a missing,
+  empty or removed registry accepts all.
+- `robot.info` version caught up (it still said 0.19.0).
+
 ## v0.19.2 — v0.19.1 crashed the MCP server at startup; fixed, and this time started before shipping
 
 - **Problem:** v0.19.1 passed a full Zod object to the SDK's legacy

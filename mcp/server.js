@@ -38,6 +38,8 @@ function loadKnownAgents() {
   }
 }
 
+// Startup snapshot, for description text only. `ping` re-reads the file per
+// call: an agent registered after this server started must be reachable.
 const KNOWN_AGENTS = loadKnownAgents();
 const peerList = KNOWN_AGENTS.filter((a) => a !== AGENT_ID).join(", ") || "(none registered yet)";
 
@@ -83,12 +85,13 @@ server.tool(
       .describe("Parent message id if this is a reply. Omit for new threads."),
   },
   async ({ to, subject, body, reply_to }) => {
-    if (KNOWN_AGENTS.length && !KNOWN_AGENTS.includes(to)) {
+    const known = loadKnownAgents();
+    if (known.length && !known.includes(to)) {
       return {
         content: [
           {
             type: "text",
-            text: `Unknown agent "${to}". Registered: ${KNOWN_AGENTS.join(", ")}`,
+            text: `Unknown agent "${to}". Registered: ${known.join(", ")}`,
           },
         ],
       };
