@@ -47,6 +47,8 @@ main{flex:1;padding:.8rem .8rem 6rem;outline:none}
 .msg-err{color:var(--red);margin:.4rem 0}
 .small{font-size:.8rem;color:var(--muted)}
 .row{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+.row input{flex:1;min-width:0;width:auto}
+.row+div{margin-top:.75rem}
 
 /* fleet cards */
 .cards{display:grid;gap:.7rem}

@@ -182,7 +182,7 @@
   }
   function paint(seq, ...nodes) {
     if (seq !== renderSeq) return false;        // a newer screen already took over
-    view.replaceChildren(...nodes);
+    view.replaceChildren(...nodes.filter(Boolean));   // replaceChildren(null) would print "null"
     return true;
   }
   function letterRow(m, opts) {
@@ -373,10 +373,10 @@
       if (seq !== renderSeq) return;
       if (!res.ok) return results.replaceChildren(problem(res));
       const list = res.data.letters || [];
-      results.replaceChildren(
+      results.replaceChildren(...[
         term ? h('p', { class: 'small', text: res.data.total + ' found' + (res.data.total > list.length ? ', showing the newest ' + list.length : '') }) : null,
         list.length ? h('div', { class: 'letters' }, list.map((m) => letterRow(m, { traffic: true })))
-          : h('p', { class: 'empty', text: term ? 'Nothing matches.' : 'No traffic.' }));
+          : h('p', { class: 'empty', text: term ? 'Nothing matches.' : 'No traffic.' })].filter(Boolean));
     };
     q.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
     if (quiet) {

@@ -92,6 +92,7 @@ LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX = 50, 200
 PREVIEW_CHARS = 240
 DISPATCHER_TIMEOUT_SEC = 8
 TOKEN_MAX_LEN = 512
+EXIT_CONFIG = 78     # EX_CONFIG: the unit file's RestartPreventExitStatus stops a restart loop on it
 
 # Headers Tailscale Serve (or any reverse proxy) adds. The dispatcher talks to
 # /inbox directly over loopback and never sends them, so their presence means
@@ -169,6 +170,9 @@ def config_from_env(env=os.environ) -> Config:
     login = env.get("POCKET_TAILSCALE_LOGIN", "").strip()
     if not login:
         raise ConfigError("POCKET_TAILSCALE_LOGIN is not set (the one Tailscale login allowed in)")
+    for key, value in (("POCKET_DISCOBUS_URL", url), ("POCKET_TAILSCALE_LOGIN", login)):
+        if "<" in value or ">" in value:
+            raise ConfigError(f"{key} is still the env.example placeholder: {value!r}")
     try:
         port = int(env.get("POCKET_PORT", "9101"))
     except ValueError:
@@ -918,7 +922,7 @@ def main(argv: list[str]) -> int:
         cfg = config_from_env()
     except ConfigError as e:
         log.error("not starting: %s", e)
-        return 1
+        return EXIT_CONFIG
     server = make_server(cfg)
     log.info("listening on %s:%d as %s; dispatcher %s", BIND_HOST, cfg.port, cfg.agent, cfg.dispatcher)
     try:

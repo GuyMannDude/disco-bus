@@ -47,7 +47,7 @@ class Pocket:
         self.server = pb.make_server(self.cfg, port=0)
         self.app = self.server.app
         self.base = f"http://127.0.0.1:{self.server.server_port}"
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
 
     def close(self):
         self.server.shutdown()

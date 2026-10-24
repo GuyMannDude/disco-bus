@@ -612,7 +612,7 @@ def test_binds_loopback_only(pocket):
 
 def test_main_refuses_to_start_unconfigured(monkeypatch):
     monkeypatch.delenv("POCKET_DISCOBUS_URL", raising=False)
-    assert pb.main([]) == 1
+    assert pb.main([]) == pb.EXIT_CONFIG == 78
 
 
 def test_mint_stores_a_hash_only(tmp_path):
@@ -631,3 +631,44 @@ def test_mint_stores_a_hash_only(tmp_path):
 def test_a_minted_token_opens_the_api(pocket):
     token = pb.mint("phone2", pocket.config_dir)
     assert pocket.api("GET", "health", token=token)[0] == 200
+
+
+# -- shipped examples ----------------------------------------------------------
+
+POCKET_DIR = Path(__file__).resolve().parent.parent
+
+
+def _env_file(path: Path) -> dict:
+    out = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            k, _, v = line.partition("=")
+            out[k] = v
+    return out
+
+
+def test_env_example_names_both_required_settings_and_is_refused_unfilled():
+    env = _env_file(POCKET_DIR / "env.example")
+    assert set(env) == {"POCKET_DISCOBUS_URL", "POCKET_TAILSCALE_LOGIN"}
+    with pytest.raises(pb.ConfigError, match="placeholder"):
+        pb.config_from_env(env)
+    filled = dict(env, POCKET_DISCOBUS_URL="http://203.0.113.2:9100")
+    with pytest.raises(pb.ConfigError, match="POCKET_TAILSCALE_LOGIN is still"):
+        pb.config_from_env(filled)
+
+
+def test_doors_example_loads(tmp_path):
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    (cfg_dir / "doors.json").write_text((POCKET_DIR / "doors.example.json").read_text())
+    app = pb.App(pb.Config(dispatcher="http://127.0.0.1:1", login=LOGIN, config_dir=cfg_dir))
+    doors, err = app.doors()
+    assert err is None and len(doors) == 3 and doors["Helper"]["wakes"] is True
+
+
+def test_unit_file_requires_the_env_file_and_does_not_spin_on_bad_config():
+    unit = (POCKET_DIR / "systemd" / "pocket-bus.service").read_text()
+    assert "EnvironmentFile=%h/.config/pocket-bus/env" in unit      # no "-": required
+    assert f"RestartPreventExitStatus={pb.EXIT_CONFIG}" in unit
+    assert "ExecStart=/usr/bin/python3 %h/github/disco-bus/pocket/pocket_bus.py" in unit

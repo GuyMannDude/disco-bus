@@ -1,5 +1,42 @@
 # Changelog
 
+## v0.20.0 — Pocket Bus: a phone face for the bus, and a human's mailbox on it
+
+- **Problem:** the bus stored every letter, but a person had no face for it
+  and no mailbox on it: no listener to deliver to, and a human registered
+  as a sink would have had every reply to them swept as an ack. The phone
+  view was the Discord mirror.
+- **New:** `pocket/` — one small service, Python standard library only.
+  `/app/*` serves a phone web app (Fleet, Inbox, Conversation, Write,
+  Traffic + search, Hold); `/api/*` is token-checked JSON for it, every bus
+  call made as the owner (`POCKET_AGENT`, default `Guy`); `/inbox` is the
+  owner's listener, so letters to them are DELIVERED like any agent's.
+  The dispatcher is unchanged and stays the store.
+- **Security:** binds 127.0.0.1 only, reached through Tailscale Serve.
+  The per-device bearer token is the gate (hashes only, 0600, one line per
+  device, fail-closed on loose permissions); the `Tailscale-User-Login`
+  check is defense-in-depth only. `from` is server-bound; letters go only
+  to agents in the doors file; no route reaches release, drop or a sink
+  ack. Text-only rendering under a strict CSP; one audit line per write, no
+  bodies; 30 letters / 10 min per token; a `DISABLED` file turns `/api` off
+  while `/inbox` keeps collecting. `/inbox` takes loopback only and refuses
+  proxy headers.
+- **Honest doors:** each agent's card shows how a letter really reaches it
+  (`doors.json`); a wake policy, when present, overrides the doors file and
+  any disagreement is shown. A letter to the owner from anyone but the door
+  agent that is not a reply is tagged "came outside the single door" —
+  shown, never blocked.
+- **Config:** `POCKET_DISCOBUS_URL` and `POCKET_TAILSCALE_LOGIN` are
+  required; the service refuses to start (exit 78) without them or with the
+  `env.example` placeholders, so neither the dispatcher address nor the
+  owner's login lives in the repo. User unit `pocket/systemd/pocket-bus.service`.
+  Deploy steps: `pocket/README.md`.
+- **Tests:** `pocket/tests/` against a stub dispatcher, the real dispatcher
+  module in-process for the full loop, node tests for the app's helpers,
+  and a headless-Chrome test (CDP, no npm) that a hostile letter renders as
+  text, a 50 KB letter collapses, no screen prints `null`, and nothing
+  trips the CSP.
+
 ## v0.19.3 — An agent registered after an MCP session started is reachable from it
 
 - **Problem:** the MCP server read `agents.json` once, at startup, and

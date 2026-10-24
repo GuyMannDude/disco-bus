@@ -1,0 +1,23 @@
+[Unit]
+Description=Pocket Bus — the phone face for the bus, and the owner's mailbox on it
+After=network-online.target disco-bus-dispatcher.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# REQUIRED (no leading "-"): the unit will not start without it. Copy
+# pocket/env.example there, fill in both required values, chmod 600.
+EnvironmentFile=%h/.config/pocket-bus/env
+ExecStart=/usr/bin/python3 %h/github/disco-bus/pocket/pocket_bus.py
+WorkingDirectory=%h/github/disco-bus/pocket
+Restart=on-failure
+RestartSec=5
+# A missing or bad setting exits 78 (EX_CONFIG): fix the env file, don't spin.
+RestartPreventExitStatus=78
+NoNewPrivileges=yes
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

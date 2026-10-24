@@ -1,0 +1,7 @@
+{
+ "agents": {
+  "Builder": {"label": "Builder", "host": "laptop", "wakes": false, "how": "Letter waits until someone types bus on the laptop"},
+  "Helper": {"label": "Helper", "host": "workstation", "wakes": true, "how": "A letter wakes it"},
+  "Assistant": {"label": "Assistant", "host": "cloud", "wakes": false, "how": "Talk to it in its own chat app"}
+ }
+}
