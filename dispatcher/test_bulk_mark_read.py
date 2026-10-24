@@ -39,6 +39,7 @@ class BulkMarkReadTest(unittest.TestCase):
         self.addCleanup(self.tempdir.cleanup)
         bulk_mark_read.DB_PATH = Path(self.tempdir.name) / "bus.sqlite"
         self.conn = sqlite3.connect(bulk_mark_read.DB_PATH)
+        self.addCleanup(self.conn.close)   # before tempdir cleanup (LIFO); Windows locks open files
         self.conn.row_factory = sqlite3.Row
         self.conn.execute(
             """CREATE TABLE messages (

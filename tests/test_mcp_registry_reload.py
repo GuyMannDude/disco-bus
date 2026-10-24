@@ -92,6 +92,10 @@ class RegistryReloadTests(unittest.TestCase):
                     "DISCOBUS_AGENT": "A",
                     "DISCOBUS_DISPATCHER": f"http://127.0.0.1:{self.httpd.server_port}",
                     "DISCOBUS_AGENTS_FILE": str(self.agents)}
+        # node on Windows aborts (ncrypto::CSPRNG) without these
+        for key in ("SYSTEMROOT", "USERPROFILE"):
+            if key in os.environ:
+                self.env[key] = os.environ[key]
         self.mcp = None
 
     def tearDown(self):
