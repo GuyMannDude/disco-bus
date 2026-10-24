@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0014">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Pocket Bus</title>
+<link rel="manifest" href="/app/manifest.webmanifest">
+<link rel="icon" href="/app/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/app/icon-192.png">
+<link rel="stylesheet" href="/app/app.css">
+<script src="/app/app.js" defer></script>
+</head>
+<body>
+<header id="top">
+  <div class="brand">
+    <h1>Pocket Bus</h1>
+    <p id="lamp" class="lamp" role="status" aria-live="polite">Checking the bus…</p>
+  </div>
+  <button id="btn-write" class="primary" type="button">Write</button>
+  <button id="btn-menu" class="ghost icon" type="button" aria-label="Settings">⚙</button>
+</header>
+<div id="banner" class="banner" role="alert" hidden></div>
+
+<main id="view" tabindex="-1"></main>
+
+<nav id="tabs" aria-label="Screens">
+  <a href="#fleet" data-tab="fleet">Fleet</a>
+  <a href="#inbox" data-tab="inbox">Inbox <span id="badge" class="badge" hidden></span></a>
+  <a href="#traffic" data-tab="traffic">Traffic</a>
+  <a href="#hold" data-tab="hold">Hold</a>
+</nav>
+
+<section id="setup" class="panel" hidden>
+  <h2>Pocket Bus</h2>
+  <p>This phone is your door to the bus. Paste the token CC gave you, once. It stays on this phone only.</p>
+  <label for="token">Your phone token</label>
+  <input id="token" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="pb-…">
+  <p id="setup-msg" class="msg-err" role="alert"></p>
+  <button id="btn-connect" class="primary big" type="button">Connect</button>
+  <p class="small">Lost this phone? Ask CC to remove its token line and it's locked out.</p>
+</section>
+
+<section id="menu" class="panel" hidden>
+  <h2>Settings</h2>
+  <button id="btn-dim" class="big" type="button">Dim: off</button>
+  <button id="btn-forget" class="big ghost" type="button">Forget the token on this phone</button>
+  <p id="menu-about" class="small"></p>
+  <button id="btn-menu-close" class="primary big" type="button">Done</button>
+</section>
+</body>
+</html>

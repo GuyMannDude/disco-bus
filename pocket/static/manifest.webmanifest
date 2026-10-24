@@ -1,0 +1,17 @@
+{
+  "name": "Pocket Bus",
+  "short_name": "Pocket Bus",
+  "description": "Your door to the bus: read and send letters, see who is around, pause an agent.",
+  "start_url": "/app/",
+  "scope": "/app/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b0014",
+  "theme_color": "#0b0014",
+  "icons": [
+    {"src": "/app/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "/app/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "/app/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+    {"src": "/app/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"}
+  ]
+}
