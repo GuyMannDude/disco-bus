@@ -137,7 +137,8 @@ def test_listener_takes_a_loopback_letter(pocket):
     assert pocket.app.listener["received"] == 1
 
 
-@pytest.mark.parametrize("header", ["X-Forwarded-For", "Tailscale-User-Login", "X-Forwarded-Proto", "Forwarded"])
+@pytest.mark.parametrize("header", ["X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Forwarded",
+                                    "Tailscale-User-Login", "Tailscale-User-Name"])
 def test_listener_refuses_proxied_requests(pocket, header):
     status, _, _ = pocket.raw("POST", "/inbox", {"id": 4, "to": "Guy"}, headers={header: "192.0.2.7"})
     assert status == 403 and pocket.app.listener["received"] == 0
@@ -672,3 +673,116 @@ def test_unit_file_requires_the_env_file_and_does_not_spin_on_bad_config():
     assert "EnvironmentFile=%h/.config/pocket-bus/env" in unit      # no "-": required
     assert f"RestartPreventExitStatus={pb.EXIT_CONFIG}" in unit
     assert "ExecStart=/usr/bin/python3 %h/github/disco-bus/pocket/pocket_bus.py" in unit
+
+
+# -- review fixes (crafted letters and requests degrade, never drop the page) ----
+
+def _deep(n):
+    v = {"leaf": "x"}
+    for _ in range(n):
+        v = {"k": v}
+    return v
+
+
+def test_display_text_survives_a_deeply_nested_body():
+    text = pb.display_text(_deep(5000))
+    assert text.splitlines()[pb.FLATTEN_MAX_DEPTH].strip() == "…"
+    assert len(text.splitlines()) == pb.FLATTEN_MAX_DEPTH + 1
+
+
+def test_a_deeply_nested_letter_does_not_break_inbox_traffic_or_thread(pocket, stub):
+    mid = stub.add("Opie", "Guy", "deep", body=_deep(900))
+    for route in ("inbox?filter=unread", "traffic", f"thread/{mid}", "agent/Opie"):
+        status, data, _ = pocket.api("GET", route)
+        assert status == 200, (route, data)
+    assert "…" in pocket.api("GET", f"thread/{mid}")[1]["messages"][0]["text"]
+
+
+def test_an_unexpected_error_is_a_plain_500_not_a_dropped_connection(pocket, monkeypatch):
+    def boom(*a, **k):
+        raise KeyError("surprise")
+    monkeypatch.setattr(pb.Handler, "_traffic", boom)
+    status, data, _ = pocket.api("GET", "traffic")
+    assert status == 500 and data["server_error"] is True and "surprise" not in json.dumps(data)
+
+
+def _raw_request_line(pocket, path: bytes) -> bytes:
+    import socket
+    with socket.create_connection(("127.0.0.1", pocket.server.server_port), timeout=5) as sock:
+        sock.sendall(b"GET " + path + b" HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer " + TOKEN.encode()
+                     + b"\r\nTailscale-User-Login: " + LOGIN.encode() + b"\r\nConnection: close\r\n\r\n")
+        out = b""
+        while chunk := sock.recv(65536):
+            out += chunk
+    return out
+
+
+@pytest.mark.parametrize("raw_id", [b"\xb2", b"1" * 19, b"1" * 5000], ids=["superscript", "19-digits", "5000-digits"])
+def test_odd_letter_ids_are_a_400(pocket, raw_id):
+    assert _raw_request_line(pocket, b"/api/thread/" + raw_id).startswith(b"HTTP/1.0 400")
+
+
+def test_a_deeply_nested_request_body_is_a_400(pocket):
+    status, _, _ = pocket.raw("POST", "/api/send", data=b"[" * 200000 + b"]" * 200000,
+                              headers={"Authorization": f"Bearer {TOKEN}", "Tailscale-User-Login": LOGIN})
+    assert status in (400, 413)
+    status, _, _ = pocket.raw("POST", "/api/send", data=b"[" * 60000 + b"]" * 60000,
+                              headers={"Authorization": f"Bearer {TOKEN}", "Tailscale-User-Login": LOGIN})
+    assert status == 400
+
+
+def test_listener_refuses_a_web_page_and_non_json(pocket):
+    letter = json.dumps({"id": 4, "to": "Guy"}).encode()
+    assert pocket.raw("POST", "/inbox", {"id": 4, "to": "Guy"}, headers={"Origin": "http://evil.example"})[0] == 403
+    assert pocket.raw("POST", "/inbox", data=None, headers={"Content-Type": "text/plain"})[0] == 403
+    import urllib.error
+    import urllib.request as ur
+    req = ur.Request(pocket.base + "/inbox", data=letter, method="POST", headers={"Content-Type": "text/plain"})
+    try:
+        ur.build_opener(ur.ProxyHandler({})).open(req, timeout=5)
+        status = 200
+    except urllib.error.HTTPError as e:
+        status = e.code
+    assert status == 403 and pocket.app.listener["received"] == 0
+
+
+def test_listener_keeps_only_an_integer_last_id(pocket):
+    assert pocket.raw("POST", "/inbox", {"id": "x" * 1000, "to": "Guy"})[0] == 200
+    assert pocket.app.listener["last_id"] is None and pocket.app.listener["received"] == 1
+
+
+def test_a_parent_that_does_not_exist_yet_is_not_cached(pocket, stub):
+    future = len(stub.msgs) + 2
+    early = stub.add("Opie", "Guy", "early reply", reply_to=future)
+    tag = lambda: {m["id"]: m["outside_door"] for m in pocket.api("GET", "inbox")[1]["letters"]}[early]
+    assert tag() is True
+    assert stub.add("Guy", "Opie", "the letter it answers") == future
+    assert tag() is False
+
+
+def test_fleet_says_when_unread_counts_are_partial(pocket, stub):
+    for i in range(pb.UNREAD_COUNT_PAGE + 1):
+        stub.add("CC", "Guy", f"n{i}")
+    data = pocket.api("GET", "fleet")[1]
+    assert data["unread_partial"] == pb.UNREAD_COUNT_PAGE
+    stub.msgs.clear()
+    assert "unread_partial" not in pocket.api("GET", "fleet")[1]
+
+
+def test_an_oversized_dispatcher_answer_is_a_502(pocket, stub, monkeypatch):
+    stub.add("CC", "Guy", "s", {"text": "y" * 5000})
+    monkeypatch.setattr(pb, "DISPATCHER_READ_MAX", 1000)
+    status, data, _ = pocket.api("GET", "traffic")
+    assert status == 502 and "more than" in data["error"]
+
+
+def test_health_stays_json_when_the_dispatcher_dies_between_calls(pocket, monkeypatch):
+    real = pb.App.dispatch
+
+    def flaky(self, method, path, *a, **k):
+        if path.startswith("/mesh/inbox/"):
+            raise pb.DispatcherDown("gone")
+        return real(self, method, path, *a, **k)
+    monkeypatch.setattr(pb.App, "dispatch", flaky)
+    status, data, _ = pocket.api("GET", "health")
+    assert status == 200 and data["ok"] is False and data["dispatcher"] == {"ok": False, "error": "gone"}

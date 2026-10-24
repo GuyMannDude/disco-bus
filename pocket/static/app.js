@@ -223,6 +223,7 @@
       doorLine(c)));
     paint(seq, title('Fleet'),
       res.data.doors_error ? h('p', { class: 'msg-err', text: 'No fleet list yet (' + res.data.doors_error + '). Ask CC to add the doors file.' }) : null,
+      res.data.unread_partial ? h('p', { class: 'small', text: 'Lots of unread mail: the counts below cover your newest ' + res.data.unread_partial + ' unread letters.' }) : null,
       cards.length ? h('div', { class: 'cards' }, cards) : h('p', { class: 'empty', text: 'Nobody in the fleet list yet.' }));
   }
 

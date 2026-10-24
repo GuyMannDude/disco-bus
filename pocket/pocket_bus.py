@@ -24,8 +24,9 @@ Security (spec-pocket-bus-v0 §5):
       person it cannot tell one of their devices from another. It does shut
       out tagged devices, users a node is shared with, and Funnel traffic
       (no header).
-  S3  the sender is server-bound: `from` is always POCKET_AGENT. No route
-      reaches release, drop or a sink ack.
+  S3  the sender is server-bound: `from` is always POCKET_AGENT. Letters go
+      only to agents in doors.json, so no route reaches a sink ack while the
+      doors file lists no sink; none reaches release or drop at all.
   S4  static files are an allowlist and contain nothing private.
   S5  the app renders letters with textContent only; strict CSP on every
       response (default-src 'self', no inline script).
@@ -81,9 +82,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SEND_TEXT_MAX_BYTES = 16 * 1024          # a phone letter doesn't need more
 API_BODY_MAX_BYTES = 256 * 1024          # 16 KB of text, JSON-escaped, fits
 # The dispatcher caps a letter BODY at 1 MiB but not the envelope around it,
-# so the listener allows headroom: a letter the dispatcher accepted must never
-# be refused here (it would turn into a FAILED delivery).
+# so the listener allows headroom for any normal letter. (A letter with a
+# subject of megabytes would still be refused here and end up FAILED.)
 INBOX_MAX_BYTES = 2 * 1024 * 1024
+DISPATCHER_READ_MAX = 16 * 1024 * 1024   # a bigger answer from the dispatcher is an error, not a read
+FLATTEN_MAX_DEPTH = 20                   # deeper nesting shows as "…" (a crafted body can't recurse us out)
+UNREAD_COUNT_PAGE = 200                  # Fleet's per-sender counts cover this many unread letters
 SUBJECT_MAX = 200
 DERIVED_SUBJECT_MAX = 60
 SEND_LIMIT, SEND_WINDOW_SEC = 30, 600    # S7
@@ -92,6 +96,7 @@ LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX = 50, 200
 PREVIEW_CHARS = 240
 DISPATCHER_TIMEOUT_SEC = 8
 TOKEN_MAX_LEN = 512
+ID_MAX_DIGITS = 18
 EXIT_CONFIG = 78     # EX_CONFIG: the unit file's RestartPreventExitStatus stops a restart loop on it
 
 # Headers Tailscale Serve (or any reverse proxy) adds. The dispatcher talks to
@@ -226,6 +231,8 @@ def _scalar(v) -> str:
 
 def _flatten(value, depth: int) -> list[str]:
     pad, lines = "  " * depth, []
+    if depth >= FLATTEN_MAX_DEPTH:
+        return [f"{pad}…"]
     items = value.items() if isinstance(value, dict) else ((None, v) for v in value)
     for k, v in items:
         label = f"{pad}{str(k).replace('_', ' ')}:" if k is not None else f"{pad}-"
@@ -306,9 +313,9 @@ class App:
         req = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
             with self._opener.open(req, timeout=DISPATCHER_TIMEOUT_SEC) as r:
-                return r.status, _json_or_none(r.read()), r.headers
+                return r.status, _json_or_none(_read_capped(r)), r.headers
         except urllib.error.HTTPError as e:
-            return e.code, _json_or_none(e.read()), e.headers
+            return e.code, _json_or_none(_read_capped(e)), e.headers
         except (urllib.error.URLError, OSError, ValueError) as e:
             raise DispatcherDown(str(getattr(e, "reason", e))) from None
 
@@ -408,11 +415,12 @@ class App:
         if msg_id in self._parents:
             return self._parents[msg_id]
         status, data, _ = self.dispatch("GET", f"/mesh/state/{msg_id}")
-        parties = (data.get("from"), data.get("to")) if status == 200 and isinstance(data, dict) else None
-        if status in (200, 404):
-            if len(self._parents) > 5000:
-                self._parents.clear()
-            self._parents[msg_id] = parties
+        if status != 200 or not isinstance(data, dict):
+            return None       # not cached: that id may exist later
+        parties = (data.get("from"), data.get("to"))
+        if len(self._parents) > 5000:
+            self._parents.clear()
+        self._parents[msg_id] = parties
         return parties
 
     def outside_door(self, env: dict) -> bool:
@@ -448,13 +456,21 @@ class App:
         with self._listener_lock:
             self.listener["received"] += 1
             self.listener["last_at"] = now_iso()
-            self.listener["last_id"] = env.get("id") if isinstance(env, dict) else None
+            mid = env.get("id")
+            self.listener["last_id"] = mid if isinstance(mid, int) and not isinstance(mid, bool) else None
+
+
+def _read_capped(resp) -> bytes:
+    raw = resp.read(DISPATCHER_READ_MAX + 1)
+    if len(raw) > DISPATCHER_READ_MAX:
+        raise ApiError(502, "The bus sent back more than Pocket Bus will read.")
+    return raw
 
 
 def _json_or_none(raw: bytes):
     try:
         return json.loads(raw) if raw else None
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
 
 
@@ -526,7 +542,7 @@ class Handler(BaseHTTPRequestHandler):
             return {}
         try:
             return json.loads(raw)
-        except ValueError:
+        except (ValueError, RecursionError):
             raise ApiError(400, "That wasn't valid JSON.") from None
 
     # -- routing ------------------------------------------------------------------
@@ -562,6 +578,10 @@ class Handler(BaseHTTPRequestHandler):
         except TokenFileError as e:
             log.error("%s", e)
             return self._err(500, "Pocket Bus's token file is not safe to use. Ask CC to check it.")
+        except Exception:
+            # Say so: a dropped connection would read on the phone as "can't reach the bus".
+            log.exception("unexpected error on %s %s", method, path)
+            return self._err(500, "Something went wrong inside Pocket Bus.", server_error=True)
 
     def _static(self, path: str):
         entry = STATIC_FILES.get(path)
@@ -577,8 +597,10 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- the listener (dispatcher -> human) ---------------------------------------
     def _listener(self):
-        if self.client_address[0] not in ("127.0.0.1", "::1") or any(
-                h in self.headers for h in PROXY_HEADERS):
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        # Origin = a web page; a non-JSON type = a no-preflight browser POST.
+        if self.client_address[0] not in ("127.0.0.1", "::1") or "Origin" in self.headers \
+                or ctype != "application/json" or any(h in self.headers for h in PROXY_HEADERS):
             log.warning("listener refused a non-dispatcher caller %s", self.client_address[0])
             return self._err(403, "The listener only takes letters from the bus.")
         env = self._body(INBOX_MAX_BYTES)
@@ -641,8 +663,12 @@ class Handler(BaseHTTPRequestHandler):
         except DispatcherDown as e:
             out["dispatcher"] = {"ok": False, "error": str(e)}
         if out["dispatcher"]["ok"]:
-            status, _, headers = app.dispatch("GET", f"/mesh/inbox/{cfg.agent}",
-                                              {"filter": "unread", "limit": 1})
+            try:
+                status, _, headers = app.dispatch("GET", f"/mesh/inbox/{cfg.agent}",
+                                                  {"filter": "unread", "limit": 1})
+            except DispatcherDown as e:
+                status, headers = 0, {}
+                out["dispatcher"] = {"ok": False, "error": str(e)}
             out["registered"] = status == 200
             if status == 200:
                 out["unread"] = _int_header(headers, "X-Inbox-Total", 0)
@@ -652,23 +678,25 @@ class Handler(BaseHTTPRequestHandler):
             out["doors_error"] = doors_err
         return out
 
-    def _unread(self) -> dict[str, int] | None:
-        status, data, _ = self.app.dispatch(
-            "GET", f"/mesh/inbox/{self.app.cfg.agent}", {"filter": "unread", "limit": 500})
+    def _unread(self) -> tuple[dict[str, int] | None, bool]:
+        """Unread letters per sender, and whether that covers only the newest
+        UNREAD_COUNT_PAGE (said out loud, never silently capped)."""
+        status, data, headers = self.app.dispatch(
+            "GET", f"/mesh/inbox/{self.app.cfg.agent}", {"filter": "unread", "limit": UNREAD_COUNT_PAGE})
         if status == 404:
-            return None
+            return None, False
         if status != 200 or not isinstance(data, list):
             raise ApiError(502, _error_text(data, f"The bus answered {status}."))
         counts: dict[str, int] = {}
         for env in data:
             counts[env.get("from")] = counts.get(env.get("from"), 0) + 1
-        return counts
+        return counts, _int_header(headers, "X-Inbox-Total", len(data)) > len(data)
 
     def _fleet(self) -> dict:
         app = self.app
         doors, doors_err = app.doors()
         policy, policy_err = app.wake_policy()
-        unread = self._unread()
+        unread, partial = self._unread()
         cards = []
         for agent, row in doors.items():
             status, data, _ = app.dispatch("GET", "/mesh/search", {"from": agent, "limit": 1})
@@ -683,6 +711,8 @@ class Handler(BaseHTTPRequestHandler):
                           "unread": (unread or {}).get(agent, 0) if unread is not None else None,
                           "door": app.door(agent, row, policy, policy_err)})
         out = {"agents": cards, "registered": unread is not None}
+        if partial:
+            out["unread_partial"] = UNREAD_COUNT_PAGE
         if doors_err:
             out["doors_error"] = doors_err
         return out
@@ -860,7 +890,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def _positive_int(raw: str, what: str) -> int:
-    if not raw.isdigit() or int(raw) < 1:
+    # isdigit() alone takes "²"; int() then raises. ASCII digits, bounded length.
+    if not (raw.isascii() and raw.isdigit()) or len(raw) > ID_MAX_DIGITS or int(raw) < 1:
         raise ApiError(400, f"Bad {what}.")
     return int(raw)
 

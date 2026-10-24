@@ -16,11 +16,12 @@
   The per-device bearer token is the gate (hashes only, 0600, one line per
   device, fail-closed on loose permissions); the `Tailscale-User-Login`
   check is defense-in-depth only. `from` is server-bound; letters go only
-  to agents in the doors file; no route reaches release, drop or a sink
-  ack. Text-only rendering under a strict CSP; one audit line per write, no
+  to agents in the doors file (keep sinks out of it, and no route reaches a
+  sink ack); no route reaches release or drop. Text-only rendering under a strict CSP; one audit line per write, no
   bodies; 30 letters / 10 min per token; a `DISABLED` file turns `/api` off
-  while `/inbox` keeps collecting. `/inbox` takes loopback only and refuses
-  proxy headers.
+  while `/inbox` keeps collecting. `/inbox` takes loopback JSON only and
+  refuses proxy headers and browser origins. A crafted letter (deep nesting,
+  huge answers) degrades to "…" or a plain error, never a dropped page.
 - **Honest doors:** each agent's card shows how a letter really reaches it
   (`doors.json`); a wake policy, when present, overrides the doors file and
   any disagreement is shown. A letter to the owner from anyone but the door

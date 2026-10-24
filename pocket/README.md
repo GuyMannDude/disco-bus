@@ -42,8 +42,9 @@ shell says the bus can't be reached and when it last was.
   tailnet node signs in as the same person it cannot tell one of their
   devices from another. It does shut out tagged devices, users a node is
   shared with, and Funnel traffic (no header).
-- **S3** `from` is always `POCKET_AGENT`. No route reaches release, drop or
-  a sink ack. Letters go only to agents in the doors file.
+- **S3** `from` is always `POCKET_AGENT`. Letters go only to agents in the
+  doors file, so no route reaches a sink ack as long as the doors file lists
+  no sink (keep sinks out of it); no route reaches release or drop at all.
 - **S4** Static files are an allowlist; anything else under `/app/` is 404.
 - **S5** Letters are rendered with `textContent` only; a strict CSP rides
   every response (`default-src 'self'`, no inline script).
@@ -55,11 +56,12 @@ shell says the bus can't be reached and when it last was.
 - **S8** The file `DISABLED` in the config dir turns every `/api` route into
   503. `/inbox` keeps accepting, so no mail is lost.
 
-`/inbox` takes letters only from loopback and refuses any request carrying a
-proxy header (`Tailscale-User-*`, `X-Forwarded-*`, `Forwarded`). If Serve
-maps the whole port, a phone could still reach `/inbox`; the most it can do
-there is bump an in-memory "letters heard" counter. Mapping Serve to `/app`
-and `/api` only closes even that.
+`/inbox` takes letters only from loopback, only as `application/json`, and
+refuses any request carrying an `Origin` (a web page) or a proxy header
+(`Tailscale-User-*`, `X-Forwarded-*`, `Forwarded`). The most a caller that
+gets past that can do is bump an in-memory "letters heard" counter. If Serve
+maps the whole port, mapping it to `/app` and `/api` only closes even that;
+either way, check at deploy that a POST to `/inbox` through Serve gets 403.
 
 ## Files
 
