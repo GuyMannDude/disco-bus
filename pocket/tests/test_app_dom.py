@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import LOGIN, TOKEN, Pocket
+import pocket_bus as pb
+from conftest import LOGIN, Pocket
 
 HERE = Path(__file__).resolve().parent
 CHROME = shutil.which("google-chrome") or shutil.which("chromium")
@@ -51,9 +52,10 @@ def test_hostile_and_huge_letters_render_safely(tmp_path, stub, chrome):
     long_id = stub.add("Opie", "Guy", "a very long letter", {"text": LONG})
     stub.add("Guy", "CC", "a note back", {"text": "hello", "via": "pocket"})
     p = Pocket(tmp_path, stub)
+    code = pb.start_pairing("phone-dom", p.config_dir)
     shots = os.environ.get("POCKET_SCREENSHOTS")
     try:
-        r = subprocess.run(["node", str(HERE / "dom_check.cjs"), chrome, p.base, TOKEN, LOGIN,
+        r = subprocess.run(["node", str(HERE / "dom_check.cjs"), chrome, p.base, code, LOGIN,
                             str(xss_id), str(long_id)] + ([shots] if shots else []),
                            capture_output=True, text=True, timeout=90)
     finally:
@@ -62,6 +64,11 @@ def test_hostile_and_huge_letters_render_safely(tmp_path, stub, chrome):
     f = json.loads(r.stdout)
 
     assert f["setupShownWithoutToken"]
+    # Pairing: the six-digit field comes first; a wrong code says so and keeps
+    # the phone on setup with no token; the right one lands on Fleet.
+    assert f["codeFieldFirst"] == {"focused": True, "inputmode": "numeric", "pasteCollapsed": True}
+    assert "tries left" in f["wrongCode"]["msg"] and f["wrongCode"]["stillSetup"] and f["wrongCode"]["token"] is None
+    assert f["paired"] == {"setupHidden": True, "tokenStored": True}
     assert f["fleetCards"] == 4
     assert f["leaks"] == [], "a screen printed null/undefined"
     # The hostile letter is text, everywhere it appears.

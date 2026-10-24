@@ -5,12 +5,13 @@ import io
 import json
 import os
 import stat
+import time
 from pathlib import Path
 
 import pytest
 
 import pocket_bus as pb
-from conftest import DOORS, LOGIN, OTHER_TOKEN, TOKEN, Pocket
+from conftest import DOORS, LOGIN, OTHER_TOKEN, TOKEN, Pocket, write_private
 
 
 # ---------------------------------------------------------------- auth (S2, S8)
@@ -786,3 +787,231 @@ def test_health_stays_json_when_the_dispatcher_dies_between_calls(pocket, monkey
     monkeypatch.setattr(pb.App, "dispatch", flaky)
     status, data, _ = pocket.api("GET", "health")
     assert status == 200 and data["ok"] is False and data["dispatcher"] == {"ok": False, "error": "gone"}
+
+
+# -- pairing (S9): six digits on the phone instead of a pasted token -------------
+
+def _pair(pocket, code, login=LOGIN, **extra):
+    return pocket.api("POST", "pair", {"code": code, **extra}, token=None, login=login)
+
+
+def _wrong(code):
+    return "000000" if code != "000000" else "999999"
+
+
+def test_pair_swaps_the_code_for_a_working_token_once(pocket):
+    code = pb.start_pairing("phone2", pocket.config_dir)
+    status, data, _ = _pair(pocket, code)
+    assert status == 200 and data["name"] == "phone2" and data["token"].startswith("pb-")
+    tokens = (pocket.config_dir / "tokens.json").read_text()
+    assert json.loads(tokens)["phone2"] == pb.hash_token(data["token"]) and data["token"] not in tokens
+    assert stat.S_IMODE((pocket.config_dir / "tokens.json").stat().st_mode) == 0o600
+    assert pocket.api("GET", "health", token=data["token"])[0] == 200
+    assert pocket.api("GET", "health")[0] == 200                         # other devices untouched
+    status, again, _ = _pair(pocket, code)
+    assert status == 410 and "token" not in again
+
+
+def test_pairing_file_holds_only_the_codes_hash(pocket):
+    code = pb.start_pairing("phone2", pocket.config_dir)
+    path = pocket.config_dir / "pairing.json"
+    entry = json.loads(path.read_text())["phone2"]
+    assert set(entry) == {"sha256", "expires", "attempts"}
+    assert entry["sha256"] == pb.hash_token(code) and entry["attempts"] == 0
+    assert 0 < entry["expires"] - time.time() <= pb.PAIR_TTL_SEC
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_pair_twice_replaces_the_pending_code(pocket, monkeypatch):
+    codes = iter([111111, 222222])
+    monkeypatch.setattr(pb.secrets, "randbelow", lambda n: next(codes))
+    assert pb.start_pairing("phone2", pocket.config_dir) == "111111"
+    assert pb.start_pairing("phone2", pocket.config_dir) == "222222"
+    assert list(json.loads((pocket.config_dir / "pairing.json").read_text())) == ["phone2"]
+    assert _pair(pocket, "111111")[0] == 401
+    assert _pair(pocket, "222222")[0] == 200
+
+
+def test_an_expired_code_is_410(pocket):
+    code = pb.start_pairing("phone2", pocket.config_dir)
+    path = pocket.config_dir / "pairing.json"
+    table = json.loads(path.read_text())
+    table["phone2"]["expires"] = time.time() - 1
+    write_private(path, table)
+    status, data, _ = _pair(pocket, code)
+    assert status == 410 and "ran out" in data["error"]
+    assert "phone2" not in json.loads((pocket.config_dir / "tokens.json").read_text())
+
+
+def test_five_wrong_tries_burn_the_code(pocket):
+    code = pb.start_pairing("phone2", pocket.config_dir)
+    for left in (4, 3, 2, 1, 0):
+        status, data, _ = _pair(pocket, _wrong(code))
+        assert status == 401 and data["attempts_left"] == left
+        assert (f"{left} tr" in data["error"]) if left else ("last try" in data["error"])
+    status, data, _ = _pair(pocket, code)                                # the right code, too late
+    assert status == 410 and "too many" in data["error"]
+    assert "phone2" not in json.loads((pocket.config_dir / "tokens.json").read_text())
+
+
+@pytest.mark.parametrize("bad", ["12345", "1234567", 123456, None, "１２３４５６", "12 456"],
+                         ids=["5-digits", "7-digits", "number", "none", "fullwidth", "space"])
+def test_anything_but_six_ascii_digits_is_a_wrong_try(pocket, bad):
+    pb.start_pairing("phone2", pocket.config_dir)
+    status, data, _ = _pair(pocket, bad)
+    assert status == 401 and data["attempts_left"] == pb.PAIR_MAX_WRONG - 1
+
+
+def test_pair_without_the_owner_login_is_403_and_spends_no_try(pocket):
+    code = pb.start_pairing("phone2", pocket.config_dir)
+    assert _pair(pocket, code, login=None)[0] == 403
+    status, data, _ = _pair(pocket, code, login="someone-else@example.com")
+    assert status == 403 and data["auth"] == "login"
+    assert json.loads((pocket.config_dir / "pairing.json").read_text())["phone2"]["attempts"] == 0
+    assert _pair(pocket, code)[0] == 200
+
+
+def test_pair_honours_the_kill_switch(pocket):
+    code = pb.start_pairing("phone2", pocket.config_dir)
+    (pocket.config_dir / "DISABLED").touch()
+    status, data, _ = _pair(pocket, code)
+    assert status == 503 and data["disabled"] is True
+
+
+def test_pair_with_no_code_waiting_is_410(pocket):
+    status, data, _ = _pair(pocket, "123456")
+    assert status == 410 and "No pairing code" in data["error"]
+    pb.start_pairing("phone2", pocket.config_dir)
+    assert _pair(pocket, "123456", name="someone-else")[0] == 410       # a name narrows the match
+
+
+def test_pair_is_post_only(pocket):
+    assert pocket.api("GET", "pair", token=None)[0] == 405
+
+
+def test_pair_attempts_are_rate_limited(pocket):
+    code = pb.start_pairing("phone2", pocket.config_dir)
+    pocket.app.pair_limiter = pb.RateLimit(3, 600)
+    for _ in range(3):
+        assert _pair(pocket, _wrong(code))[0] == 401
+    assert _pair(pocket, code)[0] == 429                                 # even the right code waits
+
+
+def test_pairing_an_existing_name_archives_tokens_first_and_replaces_the_line(pocket):
+    before = (pocket.config_dir / "tokens.json").read_bytes()
+    code = pb.start_pairing("pixel", pocket.config_dir)
+    status, data, _ = _pair(pocket, code)
+    assert status == 200 and data["name"] == "pixel"
+    baks = list(pocket.config_dir.glob("tokens.json.bak-*"))
+    assert len(baks) == 1 and baks[0].read_bytes() == before
+    assert stat.S_IMODE(baks[0].stat().st_mode) == 0o600
+    assert pocket.api("GET", "health")[0] == 401                         # the old pixel token is out
+    assert pocket.api("GET", "health", token=data["token"])[0] == 200
+    assert pocket.api("GET", "health", token=OTHER_TOKEN)[0] == 200
+
+
+def test_pair_audit_has_one_line_per_try_and_never_the_code_or_token(pocket):
+    code = pb.start_pairing("phone2", pocket.config_dir)
+    _pair(pocket, _wrong(code))
+    _pair(pocket, code, login=None)
+    _, data, _ = _pair(pocket, code)
+    _pair(pocket, code)
+    lines = pocket.audit_lines()
+    assert [(x["route"], x["name"], x["result"], x["attempts"]) for x in lines] == [
+        ("pair", "phone2", "wrong", 1), ("pair", None, "forbidden", None),
+        ("pair", "phone2", "ok", 1), ("pair", None, "no-code", None)]
+    text = pocket.cfg.audit_file.read_text()
+    assert data["token"] not in text and f'"{code}"' not in text and "sha256" not in text
+
+
+def test_cli_pair_prints_a_six_digit_code_once(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("POCKET_CONFIG_DIR", str(tmp_path / "cfg"))
+    assert pb.main(["--pair", "pixel"]) == 0
+    code = capsys.readouterr().out.strip()
+    assert len(code) == 6 and code.isdigit()
+    entry = json.loads((tmp_path / "cfg" / "pairing.json").read_text())["pixel"]
+    assert entry["sha256"] == pb.hash_token(code)
+    assert pb.main(["--pair", "../evil"]) == 1
+    assert pb.main(["--pair"]) == 2
+
+
+# -- pairing review fixes ---------------------------------------------------------
+
+def test_pair_refuses_a_non_json_post_so_a_web_page_cannot_burn_codes(pocket):
+    code = pb.start_pairing("phone2", pocket.config_dir)
+    import urllib.error
+    import urllib.request as ur
+    # Straight through urllib: Pocket.raw() would relabel any body as JSON.
+    req = ur.Request(pocket.base + "/api/pair", data=json.dumps({"code": code}).encode(), method="POST",
+                     headers={"Tailscale-User-Login": LOGIN, "Content-Type": "text/plain"})
+    try:
+        ur.build_opener(ur.ProxyHandler({})).open(req, timeout=5)
+        status = 200
+    except urllib.error.HTTPError as e:
+        status = e.code
+    assert status == 415
+    assert pocket.raw("OPTIONS", "/api/pair", headers={"Tailscale-User-Login": LOGIN})[0] == 405
+    assert json.loads((pocket.config_dir / "pairing.json").read_text())["phone2"]["attempts"] == 0
+    assert _pair(pocket, code)[0] == 200
+
+
+def test_every_pair_try_is_audited_even_a_bad_request_or_a_crash(pocket):
+    code = pb.start_pairing("phone2", pocket.config_dir)
+    pocket.raw("POST", "/api/pair", data=b"{not json",
+               headers={"Tailscale-User-Login": LOGIN, "Content-Type": "application/json"})
+    os.chmod(pocket.config_dir / "pairing.json", 0o644)
+    status, _, _ = _pair(pocket, code)
+    assert status == 500
+    assert [x["result"] for x in pocket.audit_lines()] == ["bad-request", "error"]
+
+
+def test_with_two_codes_waiting_a_wrong_try_does_not_claim_both_are_gone(pocket):
+    pixel = pb.start_pairing("pixel", pocket.config_dir)
+    tablet = pb.start_pairing("tablet", pocket.config_dir)
+    path = pocket.config_dir / "pairing.json"
+    table = json.loads(path.read_text())
+    table["pixel"]["attempts"] = pb.PAIR_MAX_WRONG - 1
+    write_private(path, table)
+    status, data, _ = _pair(pocket, "000000" if "000000" not in (pixel, tablet) else "999999")
+    assert status == 401 and data["attempts_left"] == pb.PAIR_MAX_WRONG - 1 and "last try" not in data["error"]
+    assert _pair(pocket, tablet)[1]["name"] == "tablet"
+
+
+@pytest.mark.parametrize("entry", [
+    {"sha256": "", "expires": 9e18, "attempts": 0},
+    {"sha256": "é" * 64, "expires": 9e18, "attempts": 0},
+    {"sha256": "0" * 64, "expires": float("inf"), "attempts": 0},
+    {"sha256": "0" * 64, "expires": 9e18, "attempts": -100},
+    {"sha256": "0" * 64, "expires": 9e18, "attempts": True},
+], ids=["empty-hash", "non-ascii-hash", "never-expires", "negative-attempts", "bool-attempts"])
+def test_a_malformed_pairing_entry_never_matches_or_crashes(pocket, entry):
+    write_private(pocket.config_dir / "pairing.json", {"phone2": entry})
+    status, data, _ = _pair(pocket, "12345")        # not six digits: the empty hash must not match it
+    assert status == 410 and "token" not in data
+
+
+def test_cli_pair_with_a_bad_token_file_stores_no_code(tmp_path, monkeypatch):
+    cfg = tmp_path / "cfg"
+    cfg.mkdir(mode=0o700)
+    (cfg / "tokens.json").write_text("{}")
+    os.chmod(cfg / "tokens.json", 0o644)
+    monkeypatch.setenv("POCKET_CONFIG_DIR", str(cfg))
+    assert pb.main(["--pair", "pixel"]) == 1
+    assert not (cfg / "pairing.json").exists()
+
+
+def test_cli_and_service_share_one_lock(pocket):
+    if pb.fcntl is None:
+        pytest.skip("no flock on this platform")
+    import fcntl
+    import threading
+    fd = os.open(pocket.config_dir / ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)                 # hold it, like a CLI mid-write
+    done = []
+    t = threading.Thread(target=lambda: done.append(_pair(pocket, "123456")[0]))
+    t.start()
+    t.join(0.5)
+    assert done == []                              # the service waits for the lock
+    os.close(fd)
+    t.join(5)
+    assert done == [410]

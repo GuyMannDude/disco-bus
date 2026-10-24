@@ -118,7 +118,7 @@
     } catch (e) {
       res = { status: 0, ok: false, data: { error: 'Can’t reach Pocket Bus on ' + hostLabel + '.' } };
     }
-    if (res.status === 401) { forgetToken('That token didn’t work. Paste it again.'); }
+    if (res.status === 401) { forgetToken('That didn’t work. Ask CC for a new 6-digit code.'); }
     else if (res.status === 0) lamp('bad');
     else if (res.status === 503 && res.data.disabled) lamp('off');
     else if (res.data && res.data.dispatcher_down) lamp('nodispatch');
@@ -436,7 +436,7 @@
   function showSetup(msg) {
     $('setup').hidden = false;
     $('setup-msg').textContent = msg || '';
-    $('token').focus();
+    $('code').focus();
   }
   function forgetToken(msg) {
     token = ''; store.del('token');
@@ -455,6 +455,36 @@
     checkHealth(); route();
   });
   $('token').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('btn-connect').click(); });
+  // Pairing: six digits in, this phone's own token back, once. Not through
+  // api(): a 401 here is a wrong code, not a dead token.
+  $('btn-pair').addEventListener('click', async () => {
+    const code = $('code').value.replace(/\D/g, '');
+    if (code.length !== 6) { $('setup-msg').textContent = 'The code is 6 digits.'; return; }
+    const btn = $('btn-pair');
+    btn.disabled = true;
+    let status = 0, data = {};
+    try {
+      const r = await fetch('/api/pair', { method: 'POST', cache: 'no-store',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
+      status = r.status;
+      try { data = await r.json(); } catch (e) { /* not JSON */ }
+    } catch (e) {
+      data = { error: 'Can’t reach Pocket Bus on ' + hostLabel + '.' };
+    }
+    btn.disabled = false;
+    if (status === 200 && data.token) {
+      token = data.token;
+      store.set('token', token);
+      $('code').value = '';
+      $('setup-msg').textContent = '';
+      $('setup').hidden = true;
+      checkHealth(); route();
+      return;
+    }
+    if (status === 401) $('code').value = '';
+    $('setup-msg').textContent = data.error || 'That didn’t work. Ask CC for a new 6-digit code.';
+  });
+  $('code').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('btn-pair').click(); });
   $('btn-write').addEventListener('click', () => { location.hash = '#compose'; });
   $('btn-menu').addEventListener('click', () => { $('menu').hidden = false; });
   $('btn-menu-close').addEventListener('click', () => { $('menu').hidden = true; });

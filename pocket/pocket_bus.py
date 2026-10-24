@@ -35,6 +35,11 @@ Security (spec-pocket-bus-v0 §5):
   S7  30 letters per 10 minutes per token.
   S8  the file DISABLED in the config dir switches every /api route to 503;
       /inbox keeps accepting so no mail is lost.
+  S9  POST /api/pair is the one /api route without a bearer: a one-time
+      6-digit code from `--pair` (hash only on disk, 10 minutes, 5 wrong
+      tries burn it) is swapped for a fresh device token, returned once.
+      The login check (403), the kill switch (503) and the audit still apply;
+      a non-JSON POST is 415 so a web page can't send one without a preflight.
 
 Configuration (env):
   POCKET_DISCOBUS_URL     dispatcher base URL                    (required)
@@ -43,7 +48,8 @@ Configuration (env):
   POCKET_DOOR_AGENT       the one agent allowed to write first   (default CC)
   POCKET_HOST_LABEL       machine name shown in the header       (default "the bus host")
   POCKET_PORT             loopback port                          (default 9101)
-  POCKET_CONFIG_DIR       tokens.json, doors.json, DISABLED      (default ~/.config/pocket-bus)
+  POCKET_CONFIG_DIR       tokens.json, doors.json, pairing.json, DISABLED
+                                                                 (default ~/.config/pocket-bus)
   POCKET_STATE_DIR        audit.jsonl                            (default ~/.local/state/pocket-bus)
   POCKET_WAKE_POLICY      wake-policy.json; when present it wins over doors.json
                           for `wakes`                            (default <repo>/wake/wake-policy.json)
@@ -51,6 +57,7 @@ Configuration (env):
 Usage:
   pocket_bus.py              serve
   pocket_bus.py mint NAME    create a device token, store its hash, print it once
+  pocket_bus.py --pair NAME  print a one-time 6-digit code; the phone types it to get NAME's token
 """
 
 from __future__ import annotations
@@ -59,6 +66,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -69,10 +77,16 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:      # Windows test harness; the service itself runs on Linux
+    fcntl = None
 
 MESH_VERSION = "0.5"
 BIND_HOST = "127.0.0.1"          # S1: never configurable
@@ -91,6 +105,8 @@ UNREAD_COUNT_PAGE = 200                  # Fleet's per-sender counts cover this 
 SUBJECT_MAX = 200
 DERIVED_SUBJECT_MAX = 60
 SEND_LIMIT, SEND_WINDOW_SEC = 30, 600    # S7
+PAIR_TTL_SEC, PAIR_MAX_WRONG = 600, 5    # S9
+PAIR_LIMIT, PAIR_WINDOW_SEC = 20, 600    # S9: every phone arrives as 127.0.0.1 via Serve, so one shared window
 AUDIT_MAX_BYTES = 10 * 1024 * 1024       # S6
 LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX = 50, 200
 PREVIEW_CHARS = 240
@@ -157,6 +173,10 @@ class Config:
         return self.config_dir / "doors.json"
 
     @property
+    def pairing_file(self) -> Path:
+        return self.config_dir / "pairing.json"
+
+    @property
     def kill_file(self) -> Path:
         return self.config_dir / "DISABLED"
 
@@ -199,6 +219,64 @@ def now_iso() -> str:
 
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def new_token() -> str:
+    return "pb-" + secrets.token_urlsafe(32)
+
+
+def check_device_name(name: str) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", name):
+        raise ConfigError("device name: letters, digits, dot, dash, underscore; up to 64 chars")
+
+
+def read_private_json(path: Path) -> dict | None:
+    """A 0600 JSON object, or None when the file is missing. Anything else
+    (loose permissions, bad JSON, not an object) fails closed."""
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return None
+    if st.st_mode & 0o077:
+        raise TokenFileError(f"{path} is readable by others; chmod 600 it")
+    try:
+        table = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise TokenFileError(f"{path} is unreadable: {e}") from None
+    if not isinstance(table, dict):
+        raise TokenFileError(f"{path} must be a JSON object")
+    return table
+
+
+@contextmanager
+def config_lock(cfg_dir: Path):
+    """One lock for every read-modify-write of tokens.json / pairing.json,
+    shared by the service and the CLI (separate processes)."""
+    fd = os.open(cfg_dir / ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        if fcntl:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)          # closing drops the lock
+
+
+def _pending_entry(e) -> bool:
+    return (isinstance(e, dict) and isinstance(e.get("sha256"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", e["sha256"]) is not None
+            and isinstance(e.get("expires"), (int, float)) and not isinstance(e.get("expires"), bool)
+            and math.isfinite(e["expires"])
+            and isinstance(e.get("attempts"), int) and not isinstance(e.get("attempts"), bool)
+            and e["attempts"] >= 0)
+
+
+def write_private_json(path: Path, table: dict) -> None:
+    """Atomic replace; mkstemp makes the new file 0600."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.stem}-")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(table, f, indent=1)
+        f.write("\n")
+    os.replace(tmp, path)
 
 
 # ---------------------------------------------------------------- letters --
@@ -295,6 +373,7 @@ class App:
         self.cfg = cfg
         self.started = time.time()
         self.limiter = RateLimit()
+        self.pair_limiter = RateLimit(PAIR_LIMIT, PAIR_WINDOW_SEC)
         self.audit_max = AUDIT_MAX_BYTES
         self._audit_lock = threading.Lock()
         self._listener_lock = threading.Lock()
@@ -330,19 +409,9 @@ class App:
         token = token.strip()
         if scheme.lower() != "bearer" or not token or len(token) > TOKEN_MAX_LEN:
             return None
-        path = self.cfg.tokens_file
-        try:
-            st = path.stat()
-        except FileNotFoundError:
+        table = read_private_json(self.cfg.tokens_file)
+        if table is None:
             return None
-        if st.st_mode & 0o077:
-            raise TokenFileError(f"{path} is readable by others; chmod 600 it")
-        try:
-            table = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as e:
-            raise TokenFileError(f"{path} is unreadable: {e}") from None
-        if not isinstance(table, dict):
-            raise TokenFileError(f"{path} must be a JSON object of name -> sha256")
         presented = hash_token(token)
         match = None
         for name, digest in table.items():   # compare every line: no early exit
@@ -353,6 +422,57 @@ class App:
     def login_ok(self, login: str | None) -> bool:
         """Defense-in-depth only (see S2 in the module docstring)."""
         return bool(login) and login.strip().lower() == self.cfg.login.lower()
+
+    # -- pairing (S9) ---------------------------------------------------------
+    def pair(self, code: str | None, name: str | None) -> tuple[int, dict, str, str | None, int | None]:
+        """Swap a pending code for a new device token. Returns (status,
+        payload, audit result, device name, wrong attempts on that code).
+        `code` is None when what was typed isn't six digits: a wrong try."""
+        with config_lock(self.cfg.config_dir):
+            table = read_private_json(self.cfg.pairing_file) or {}
+            now = time.time()
+            pending = {n: e for n, e in table.items() if (name is None or n == name) and _pending_entry(e)}
+            if not pending:
+                return 410, {"error": "No pairing code is waiting. Ask CC for a new code."}, "no-code", name, None
+            live = {n: e for n, e in pending.items() if e["expires"] > now and e["attempts"] < PAIR_MAX_WRONG}
+            if not live:
+                n, e = next(iter(pending.items()))
+                if any(x["attempts"] >= PAIR_MAX_WRONG for x in pending.values()):
+                    return 410, {"error": "That code was typed wrong too many times, so it's cancelled. "
+                                          "Ask CC for a new code."}, "burned", n, e["attempts"]
+                return 410, {"error": "That code ran out (a code lasts 10 minutes). Ask CC for a new code."}, \
+                    "expired", n, e["attempts"]
+            presented = hash_token(code) if code is not None else ""
+            match = None
+            for n, e in live.items():          # compare every line: no early exit
+                if hmac.compare_digest(presented, e["sha256"]):
+                    match = n
+            if match is None:
+                for e in live.values():
+                    e["attempts"] += 1
+                write_private_json(self.cfg.pairing_file, table)
+                # Several codes waiting and no name: keep typing while any one is still live.
+                n, e = min(live.items(), key=lambda kv: kv[1]["attempts"])
+                left = PAIR_MAX_WRONG - e["attempts"]
+                words = (f"That code isn't right. {left} {'try' if left == 1 else 'tries'} left." if left else
+                         "That code isn't right, and that was the last try, so it's cancelled. Ask CC for a new code.")
+                return 401, {"error": words, "attempts_left": left}, "wrong", n, e["attempts"]
+            # Burn the code before the token exists: a crash in between costs a
+            # new code, never a second token from the same one.
+            attempts = live[match]["attempts"]
+            del table[match]
+            write_private_json(self.cfg.pairing_file, table)
+            token = new_token()
+            tokens = read_private_json(self.cfg.tokens_file) or {}
+            if match in tokens:                # the old line is replaced: archive first
+                stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                bak = self.cfg.tokens_file.with_name(f"tokens.json.bak-{stamp}-pair-{match}")
+                fd = os.open(bak, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "wb") as f:
+                    f.write(self.cfg.tokens_file.read_bytes())
+            tokens[match] = hash_token(token)
+            write_private_json(self.cfg.tokens_file, tokens)
+            return 200, {"token": token, "name": match}, "ok", match, attempts
 
     # -- facts ----------------------------------------------------------------
     def doors(self) -> tuple[dict[str, dict], str | None]:
@@ -614,6 +734,8 @@ class Handler(BaseHTTPRequestHandler):
         app = self.app
         if app.disabled():
             return self._err(503, "Pocket Bus is switched off.", disabled=True)
+        if route == "pair":                       # S9: the one route without a bearer
+            return self._pair() if method == "POST" else self._not_allowed()
         device = app.token_name(self.headers.get("Authorization", ""))
         if device is None:
             return self._err(401, "That token isn't valid here.", auth="token")
@@ -650,6 +772,37 @@ class Handler(BaseHTTPRequestHandler):
             if route in ("pause", "play"):
                 return self._json(200, self._brake(route, body, device))
         return self._err(404, "Not found.")
+
+    def _pair(self):
+        app = self.app
+        if not app.login_ok(self.headers.get("Tailscale-User-Login")):
+            log.warning("403 login mismatch on pair: %r", self.headers.get("Tailscale-User-Login"))
+            app.audit(route="pair", name=None, result="forbidden", attempts=None)
+            return self._err(403, "This device isn't signed in to Tailscale as the owner.", auth="login")
+        if not app.pair_limiter.reserve("pair", 1):
+            app.audit(route="pair", name=None, result="limited", attempts=None)
+            return self._err(429, "Too many tries. Wait a few minutes, then try again.")
+        result, who, attempts = "bad-request", None, None
+        try:
+            # No bearer here, so a web page could post a "simple" (text/plain)
+            # request with no preflight and burn codes. JSON forces a preflight,
+            # and OPTIONS is 405.
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if ctype != "application/json":
+                raise ApiError(415, "Send the code as JSON.")
+            body = self._body(API_BODY_MAX_BYTES)
+            if not isinstance(body, dict):
+                raise ApiError(400, "Send a JSON object.")
+            code, name = body.get("code"), body.get("name")
+            if name is not None and not isinstance(name, str):
+                raise ApiError(400, "The device name must be text.")
+            if not (isinstance(code, str) and len(code) == 6 and code.isascii() and code.isdigit()):
+                code = None
+            result = "error"                  # if pair() raises, the audit line still says so
+            status, payload, result, who, attempts = app.pair(code, name)
+        finally:
+            app.audit(route="pair", name=who, result=result, attempts=attempts)   # one line per try
+        return self._json(status, payload)
 
     # -- GET --------------------------------------------------------------------------
     def _health(self) -> dict:
@@ -914,21 +1067,35 @@ def make_server(cfg: Config, port: int | None = None) -> ThreadingHTTPServer:
 
 def mint(name: str, cfg_dir: Path) -> str:
     """Create a device token, store only its hash, return the token (shown once)."""
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", name):
-        raise ConfigError("device name: letters, digits, dot, dash, underscore; up to 64 chars")
+    check_device_name(name)
     cfg_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = cfg_dir / "tokens.json"
-    table = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    if name in table:
-        raise ConfigError(f"a token named {name!r} already exists; remove its line first")
-    token = "pb-" + secrets.token_urlsafe(32)
-    table[name] = hash_token(token)
-    fd, tmp = tempfile.mkstemp(dir=cfg_dir, prefix=".tokens-")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:     # mkstemp: already 0600
-        json.dump(table, f, indent=1)
-        f.write("\n")
-    os.replace(tmp, path)
+    with config_lock(cfg_dir):
+        table = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        if name in table:
+            raise ConfigError(f"a token named {name!r} already exists; remove its line first")
+        token = new_token()
+        table[name] = hash_token(token)
+        write_private_json(path, table)
     return token
+
+
+def start_pairing(name: str, cfg_dir: Path) -> str:
+    """Store a one-time code for NAME (hash only; replaces any pending one for
+    that name) and return it, to be read out once."""
+    check_device_name(name)
+    cfg_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = cfg_dir / "pairing.json"
+    with config_lock(cfg_dir):
+        table = read_private_json(path) or {}
+        code = f"{secrets.randbelow(10 ** 6):06d}"
+        table[name] = {"sha256": hash_token(code), "expires": int(time.time()) + PAIR_TTL_SEC, "attempts": 0}
+        write_private_json(path, table)
+    return code
+
+
+def _config_dir() -> Path:
+    return Path(os.environ.get("POCKET_CONFIG_DIR") or Path.home() / ".config" / "pocket-bus").expanduser()
 
 
 def main(argv: list[str]) -> int:
@@ -936,7 +1103,7 @@ def main(argv: list[str]) -> int:
         if len(argv) != 2:
             print("usage: pocket_bus.py mint NAME", file=sys.stderr)
             return 2
-        cfg_dir = Path(os.environ.get("POCKET_CONFIG_DIR") or Path.home() / ".config" / "pocket-bus").expanduser()
+        cfg_dir = _config_dir()
         try:
             token = mint(argv[1], cfg_dir)
         except ConfigError as e:
@@ -945,6 +1112,24 @@ def main(argv: list[str]) -> int:
         print(token)
         print(f"(stored as a hash in {cfg_dir / 'tokens.json'}; this is the only time it is shown)",
               file=sys.stderr)
+        return 0
+    if argv[:1] == ["--pair"]:
+        if len(argv) != 2:
+            print("usage: pocket_bus.py --pair NAME", file=sys.stderr)
+            return 2
+        cfg_dir = _config_dir()
+        try:
+            replaces = argv[1] in (read_private_json(cfg_dir / "tokens.json") or {})   # before a code exists
+            code = start_pairing(argv[1], cfg_dir)
+        except (ConfigError, TokenFileError) as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        print(code)
+        print(f"(one-time code for {argv[1]!r}: good for 10 minutes, one use, {PAIR_MAX_WRONG} wrong tries "
+              f"cancel it; only its hash is in {cfg_dir / 'pairing.json'})", file=sys.stderr)
+        if replaces:
+            print(f"(pairing replaces the existing {argv[1]!r} token; the old tokens.json is archived first)",
+                  file=sys.stderr)
         return 0
     if argv:
         print(__doc__.split("Usage:")[1].rstrip(), file=sys.stderr)

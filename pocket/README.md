@@ -49,12 +49,27 @@ shell says the bus can't be reached and when it last was.
 - **S5** Letters are rendered with `textContent` only; a strict CSP rides
   every response (`default-src 'self'`, no inline script).
 - **S6** One JSONL audit line per write (send, read, pause, play): time,
-  route, recipient, letter id, token name, result. No bodies. Rotated by
-  rename at 10 MB, never deleted.
+  route, recipient, letter id, token name, result. No bodies. Pairing tries
+  get one line each too (time, device name, result, wrong tries so far;
+  never the code or the token). Rotated by rename at 10 MB, never deleted.
 - **S7** 30 letters per 10 minutes per token; a batch that would cross the
   line is refused whole.
 - **S8** The file `DISABLED` in the config dir turns every `/api` route into
   503. `/inbox` keeps accepting, so no mail is lost.
+- **S9** **Pairing: six digits instead of a pasted token.**
+  `pocket_bus.py --pair NAME` prints a one-time 6-digit code and stores only
+  its SHA-256 in `pairing.json` (0600), good for 10 minutes. `POST /api/pair
+  {code}` is the one `/api` route without a bearer: the login check (403),
+  the kill switch (503) and the audit still apply. A match mints a new token
+  for NAME (the old `tokens.json` is archived first if NAME already has a
+  line), burns the code, and returns the token once. Five wrong tries burn
+  the code; expired or burned is 410. Every phone reaches the service as
+  127.0.0.1 through Serve, so on top of that one shared window caps pairing
+  at 20 tries per 10 minutes. A POST that isn't `application/json` is 415:
+  that forces a browser preflight (405), so a web page can't burn codes.
+  The service and the CLI share one lock (`.lock`) for every file rewrite.
+  A 6-digit hash is no secret to someone who can
+  read the file; the 0600 mode and the 10 minutes are what protect it.
 
 `/inbox` takes letters only from loopback, only as `application/json`, and
 refuses any request carrying an `Origin` (a web page) or a proxy header
@@ -68,7 +83,8 @@ either way, check at deploy that a POST to `/inbox` through Serve gets 403.
 | Where | What |
 |---|---|
 | `~/.config/pocket-bus/env` | settings (from `env.example`), 0600 |
-| `~/.config/pocket-bus/tokens.json` | device name → token hash, 0600 (`pocket_bus.py mint`) |
+| `~/.config/pocket-bus/tokens.json` | device name → token hash, 0600 (`pocket_bus.py mint`, or pairing) |
+| `~/.config/pocket-bus/pairing.json` | pending pairing codes: name → code hash, expiry, wrong tries, 0600 (`pocket_bus.py --pair`) |
 | `~/.config/pocket-bus/doors.json` | the fleet list: one row per agent (from `doors.example.json`) |
 | `~/.config/pocket-bus/DISABLED` | kill switch: present = `/api` off |
 | `~/.local/state/pocket-bus/audit.jsonl` | write audit |
@@ -88,8 +104,10 @@ notes any disagreement with the doors file.
    `127.0.0.1` unless the dispatcher really listens there) and
    `POCKET_TAILSCALE_LOGIN`, `chmod 600` it.
 2. **Doors.** Write `~/.config/pocket-bus/doors.json` from your fleet.
-3. **Token.** `POCKET_CONFIG_DIR=~/.config/pocket-bus python3 pocket_bus.py mint pixel`
-   prints the token once; only its hash is stored. Hand it over off-chat.
+3. **Token.** Usually nothing to do here: step 7 pairs the phone. For a
+   device that can't type a code, `POCKET_CONFIG_DIR=~/.config/pocket-bus
+   python3 pocket_bus.py mint pixel` prints a token once (only its hash is
+   stored); hand it over off-chat.
 4. **Register the owner on the bus.** Archive `agents.json` first, then add
    `"Guy": {"url": "http://127.0.0.1:9101/inbox", "human": true}`. Agents'
    bus MCPs re-read the registry per `ping` from v0.19.3; older sessions
@@ -99,8 +117,11 @@ notes any disagreement with the doors file.
    `journalctl --user -u pocket-bus` should say `listening on 127.0.0.1:9101`.
 6. **Serve.** `tailscale serve --bg --https=9101 http://127.0.0.1:9101`
    (tailnet only, never Funnel).
-7. **Phone.** Open `https://<host>.<tailnet>.ts.net:9101/app/`, paste the
-   token, then Chrome menu → Add to Home screen.
+7. **Phone.** Open `https://<host>.<tailnet>.ts.net:9101/app/`. On the bus
+   host run `python3 pocket_bus.py --pair pixel` and read the six digits to
+   the owner; they type them on the phone (within 10 minutes) and it lands
+   on Fleet. Then Chrome menu → Add to Home screen. ("Paste a token instead"
+   under the code field still takes a minted token.)
 
 **Lost phone:** delete its line in `tokens.json`. **Everything off:**
 `touch ~/.config/pocket-bus/DISABLED`.

@@ -34,11 +34,17 @@
 
 <section id="setup" class="panel" hidden>
   <h2>Pocket Bus</h2>
-  <p>This phone is your door to the bus. Paste the token CC gave you, once. It stays on this phone only.</p>
-  <label for="token">Your phone token</label>
-  <input id="token" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="pb-…">
+  <p>This phone is your door to the bus. You only do this once.</p>
+  <label for="code">Type the 6-digit code CC gave you</label>
+  <input id="code" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" placeholder="6 digits">
   <p id="setup-msg" class="msg-err" role="alert"></p>
-  <button id="btn-connect" class="primary big" type="button">Connect</button>
+  <button id="btn-pair" class="primary big" type="button">Connect</button>
+  <details class="sub">
+    <summary>Paste a token instead</summary>
+    <label for="token">Your phone token</label>
+    <input id="token" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="pb-…">
+    <button id="btn-connect" class="big" type="button">Connect with the token</button>
+  </details>
   <p class="small">Lost this phone? Ask CC to remove its token line and it's locked out.</p>
 </section>
 

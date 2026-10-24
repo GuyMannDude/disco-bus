@@ -1,12 +1,12 @@
 // Drives a real headless Chrome over CDP (node 22's global WebSocket, no npm)
 // against a running Pocket Bus, and prints one JSON object of DOM facts for
 // test_app_dom.py to assert on.
-//   node dom_check.cjs <browser-ws-url> <base-url> <token> <login> <xss-id> <long-id> [screenshot-dir]
+//   node dom_check.cjs <browser-ws-url> <base-url> <pairing-code> <login> <xss-id> <long-id> [screenshot-dir]
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
 
-const [wsUrl, base, token, login, xssId, longId, shotDir] = process.argv.slice(2);
+const [wsUrl, base, code, login, xssId, longId, shotDir] = process.argv.slice(2);
 
 function cdp(url) {
   const ws = new WebSocket(url);
@@ -105,13 +105,30 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await s('Page.addScriptToEvaluateOnNewDocument', { source:
     "document.addEventListener('securitypolicyviolation', () => { window.__csp = (window.__csp || 0) + 1; });" });
 
-  // Load once, store the token the way the app does, reload signed in.
+  // Load once and pair the way a person does: a wrong code, then the right one.
   await s('Page.navigate', { url: base + '/app/' });
   await waitFor(`document.readyState === 'complete' && !!document.getElementById('setup')`, 'setup screen');
   facts.setupShownWithoutToken = await evaluate(`!document.getElementById('setup').hidden`);
+  facts.codeFieldFirst = await evaluate(`(() => {
+    const c = document.getElementById('code');
+    return { focused: document.activeElement === c, inputmode: c.getAttribute('inputmode'),
+             pasteCollapsed: !document.getElementById('token').closest('details').open };
+  })()`);
   await shot('0-setup');
-  await evaluate(`localStorage.setItem('pocketbus.token', ${JSON.stringify(JSON.stringify(token))})`);
-  // Same path + a hash is a same-document navigation: reload for real.
+  const typeCode = (value) => evaluate(`(() => {
+    document.getElementById('setup-msg').textContent = '';
+    document.getElementById('code').value = ${JSON.stringify(value)};
+    document.getElementById('btn-pair').click();
+  })()`);
+  await typeCode(code === '000000' ? '999999' : '000000');
+  await waitFor(`document.getElementById('setup-msg').textContent !== ''`, 'wrong-code message');
+  facts.wrongCode = await evaluate(`({ msg: document.getElementById('setup-msg').textContent,
+    stillSetup: !document.getElementById('setup').hidden, token: localStorage.getItem('pocketbus.token') })`);
+  await typeCode(code);
+  await waitFor(`!!document.querySelector('#view .card')`, 'fleet cards after pairing');
+  facts.paired = await evaluate(`({ setupHidden: document.getElementById('setup').hidden,
+    tokenStored: (JSON.parse(localStorage.getItem('pocketbus.token') || '""')).startsWith('pb-') })`);
+  // The token survives a reload. (Same path + a hash is same-document: reload for real.)
   await evaluate(`location.hash = '#fleet'`);
   await s('Page.reload', { ignoreCache: true });
   await waitFor(`!!document.querySelector('#view .card')`, 'fleet cards');
