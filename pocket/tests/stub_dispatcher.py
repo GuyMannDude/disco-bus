@@ -139,11 +139,14 @@ class StubDispatcher:
             m = self.by_id(int(path.rsplit("/", 1)[1]))
             if not m:
                 return 404, {"error": "not found"}
-            if m["to"] != body.get("agent"):
+            if m["to"] != body.get("agent") and m["from"] != body.get("agent"):
                 return 403, {"error": "only the recipient can mark this message read"}
+            if m["to"] != body.get("agent"):
+                # v0.20.1: the sender's read is a peek -- nothing marked.
+                return 200, {**m, "first_read": False, "reader_role": "sender"}
             first = m["read_at"] is None
             m["read_at"] = m["read_at"] or "2026-10-23T21:00:00Z"
-            return 200, {**m, "first_read": first}
+            return 200, {**m, "first_read": first, "reader_role": "recipient"}
         if path in ("/mesh/pause", "/mesh/play"):
             agent = body.get("agent")
             if agent not in self.registry:

@@ -883,16 +883,22 @@ class DispatcherHandler(BaseHTTPRequestHandler):
             if not row:
                 conn.close()
                 return self._json(404, {"error": "not found"})
-            if row["to_agent"] != reader:
+            if row["to_agent"] != reader and row["from_agent"] != reader:
                 conn.close()
-                return self._json(403, {"error": "only the recipient can mark this message read"})
+                return self._json(403, {"error": "only the recipient can mark this message read "
+                                                 "(and only the sender may read it without marking)"})
+            # The SENDER may fetch its own letter's body -- read is also mark-read,
+            # so until v0.20.1 a sender had no way to quote or verify what it sent
+            # (CC2 #5048, snag-disco-bus-sender-cannot-read-own-envelope). read_at
+            # belongs to the recipient: a sender's read never touches it.
+            sender_peek = row["to_agent"] != reader
             # first_read tells the caller whether THIS call opened the message.
             # Without it the response is identical either way, and a reader that
             # sees a populated read_at cannot tell the timestamp its own call just
             # wrote from one an earlier read left behind. Derived from rowcount,
             # not the check above, so a losing racer is correctly told "not first".
             first_read = False
-            if row["read_at"] is None:
+            if not sender_peek and row["read_at"] is None:
                 cursor = conn.execute(
                     "UPDATE messages SET read_at=? WHERE id=? AND read_at IS NULL",
                     (now_utc(), msg_id),
@@ -903,7 +909,13 @@ class DispatcherHandler(BaseHTTPRequestHandler):
             conn.close()
             # Not part of row_to_envelope: it describes this call, not the row, so
             # inbox/history/state listings must not grow a meaningless field.
-            payload = {**row_to_envelope(row), "first_read": first_read}
+            payload = {
+                **row_to_envelope(row),
+                "first_read": first_read,
+                # Who is asking, so the client can say "your own letter" instead
+                # of reading a recipient-shaped banner over a sender's peek.
+                "reader_role": "sender" if sender_peek else "recipient",
+            }
             # Opie #2875, honesty_in_the_response: retrieval must not let an
             # archived envelope read as live mail. The envelope is identical
             # either way, so the difference has to be said in words -- and it

@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.20.1 — a sender can read its own letter
+
+- **Problem:** `/mesh/read` was also the mark-read call and admitted only the
+  recipient, so a sender got `403` on its own letter and had no way to fetch
+  the body it sent — `search` and `ping_history` carry subjects only. CC2 hit
+  it on #5048 (snag-disco-bus-sender-cannot-read-own-envelope); CC had to
+  mail the text back.
+- **Fix (dispatcher):** the sender may read its own envelope. The read is a
+  peek: `read_at` belongs to the recipient and is never written by a sender's
+  call; `first_read` is `false`. New field `reader_role` (`sender` |
+  `recipient`) says who asked. Third parties still get `403`.
+- **Fix (mcp `ping_read`):** a sender's read gets its own banner — "YOUR OWN
+  LETTER … <to> opened it at … / has NOT opened it yet. This read marked
+  nothing." — instead of a recipient-shaped NEW / ALREADY READ line.
+- **Pocket:** unchanged code; the owner's own sent letters now open instead
+  of erroring, via the dispatcher.
+- Tests: `test_read_state` +1 (sender peek, recipient still first, third
+  party 403).
+
 ## v0.20.0 — Pocket Bus: a phone face for the bus, and a human's mailbox on it
 
 - **Problem:** the bus stored every letter, but a person had no face for it

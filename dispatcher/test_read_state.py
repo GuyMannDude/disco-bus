@@ -131,11 +131,32 @@ class ReadStateTests(unittest.TestCase):
         for message in self.get_json("/mesh/inbox/Opie?filter=all"):
             self.assertNotIn("first_read", message)
 
-    def test_only_recipient_can_mark_read(self):
+    def test_third_party_cannot_read(self):
+        # Message 1 is Rocky -> Opie; Dave is neither.
         with self.assertRaises(urllib.error.HTTPError) as caught:
-            self.post_json("/mesh/read/1", {"agent": "Rocky"})
+            self.post_json("/mesh/read/1", {"agent": "Dave"})
         self.assertEqual(caught.exception.code, 403)
         self.assertIsNone(self.get_json("/mesh/state/1")["read_at"])
+
+    def test_sender_reads_own_letter_without_marking(self):
+        # CC2 #5048: the sender could not fetch its own body (403). Now it can,
+        # and the recipient's read_at is untouched.
+        data = self.post_json("/mesh/read/1", {"agent": "Rocky"})
+        self.assertEqual(data["from"], "Rocky")
+        self.assertEqual(data["subject"], "broadcast")
+        self.assertIn("body", data)
+        self.assertEqual(data["reader_role"], "sender")
+        self.assertFalse(data["first_read"])
+        self.assertIsNone(data["read_at"])
+        self.assertIsNone(self.get_json("/mesh/state/1")["read_at"])
+        # The recipient's first read is still THE first read.
+        opened = self.post_json("/mesh/read/1", {"agent": "Opie"})
+        self.assertTrue(opened["first_read"])
+        self.assertEqual(opened["reader_role"], "recipient")
+        # Sender reads after that see the recipient's timestamp, unchanged.
+        again = self.post_json("/mesh/read/1", {"agent": "Rocky"})
+        self.assertEqual(again["read_at"], opened["read_at"])
+        self.assertFalse(again["first_read"])
 
 
 class MigrationTests(unittest.TestCase):

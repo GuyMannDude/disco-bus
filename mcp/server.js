@@ -220,7 +220,8 @@ server.tool(
     `This call MARKS the message read, so it always returns a read_at — ` +
     `check first_read (and the leading banner) to tell whether you are the ` +
     `first to open it. A populated read_at is NOT by itself evidence you ` +
-    `already saw the message.`,
+    `already saw the message. The SENDER may also read its own letter: that ` +
+    `returns the body without marking it, and read_at stays the recipient's.`,
   {
     id: z
       .number()
@@ -245,7 +246,15 @@ server.tool(
       }
       // read_at alone is ambiguous: this call sets it, so a first read and a
       // hundredth read return the same field. Lead with the verdict.
-      const banner = data.first_read
+      // A sender's read (v0.20.1) is a peek: nothing was marked, so neither
+      // recipient-shaped banner is true for it.
+      const banner = data.reader_role === "sender"
+        ? `YOUR OWN LETTER — #${id} is from you to ${data.to}. ` +
+          (data.read_at
+            ? `${data.to} opened it at ${data.read_at}.`
+            : `${data.to} has NOT opened it yet.`) +
+          ` This read marked nothing.`
+        : data.first_read
         ? `NEW — you are the first to open #${id}. The read_at below was set by ` +
           `THIS call, so it is not evidence anyone saw this before you. Treat the ` +
           `message as unread-until-now and act on it.`

@@ -152,7 +152,11 @@ def test_reply_thread_read_and_tag_through_the_real_bus(loop):
     assert {m["id"]: m["outside_door"] for m in inbox["letters"]} == {answer: False, cold: True}
     assert pocket.api("POST", f"read/{answer}", {})[0] == 200
     assert bus.state(answer)["read_at"]
-    assert pocket.api("POST", f"read/{ask}", {})[0] == 403        # Guy's own letter, to Opie
+    # Guy's own letter, to Opie: v0.20.1 lets the sender read it, as a peek --
+    # 200, nothing marked, Opie's read_at still empty.
+    status, own, _ = pocket.api("POST", f"read/{ask}", {})
+    assert status == 200 and own["first_read"] is False and own["read_at"] is None
+    assert bus.state(ask)["read_at"] is None
 
 
 def test_pause_and_play_through_the_real_bus(loop):
