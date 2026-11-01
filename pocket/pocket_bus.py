@@ -501,6 +501,28 @@ class App:
             }
         return out, None
 
+    def links(self) -> list[dict]:
+        """doors.json top-level "links": the owner's OTHER phone doors (Pocket Mnemo
+        first), shown on the Fleet screen so one home screen holds every door
+        (Opie #5850, Guy's ask #5847). Config-driven on purpose: the app code
+        carries no off-origin URL (its own static test). A bad row is dropped,
+        never raised — the fleet list must not die for a link."""
+        try:
+            raw = json.loads(self.cfg.doors_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        rows = raw.get("links") if isinstance(raw, dict) else None
+        out = []
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            url = str(row.get("url") or "")
+            if not (url.startswith("http://") or url.startswith("https://")):
+                continue
+            out.append({"label": str(row.get("label") or url), "text": str(row.get("text") or ""),
+                        "url": url, "needs": str(row.get("needs") or "")})
+        return out
+
     def wake_policy(self) -> tuple[dict | None, str | None]:
         """(policy, error). None policy = no policy file: doors.json speaks."""
         path = self.cfg.wake_policy
@@ -863,7 +885,7 @@ class Handler(BaseHTTPRequestHandler):
                           "last_heard": last, "on_bus": on_bus,
                           "unread": (unread or {}).get(agent, 0) if unread is not None else None,
                           "door": app.door(agent, row, policy, policy_err)})
-        out = {"agents": cards, "registered": unread is not None}
+        out = {"agents": cards, "registered": unread is not None, "links": app.links()}
         if partial:
             out["unread_partial"] = UNREAD_COUNT_PAGE
         if doors_err:

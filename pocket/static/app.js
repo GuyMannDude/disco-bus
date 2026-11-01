@@ -233,10 +233,18 @@
       h('div', { class: 'heard', text: !c.on_bus ? 'Not on the bus registry' :
         (c.last_heard ? 'Last heard ' + PB.ago(c.last_heard) : 'Not heard from yet') }),
       doorLine(c)));
+    // The owner's other phone doors (Pocket Mnemo first): one home screen, every door.
+    // URLs come from the server's doors file, never from this code.
+    const links = (res.data.links || []).map((l) => h('a', { class: 'card link', href: l.url, target: '_blank', rel: 'noopener' },
+      h('div', null, h('span', { class: 'name', text: l.label }), h('span', { class: 'host', text: 'opens in a new tab' })),
+      l.text ? h('div', { class: 'heard', text: l.text }) : null,
+      l.needs ? h('div', { class: 'door' }, h('span', { class: 'dot', 'aria-hidden': 'true' }), l.needs) : null));
     paint(seq, title('Fleet'),
       res.data.doors_error ? h('p', { class: 'msg-err', text: 'No fleet list yet (' + res.data.doors_error + '). Ask CC to add the doors file.' }) : null,
       res.data.unread_partial ? h('p', { class: 'small', text: 'Lots of unread mail: the counts below cover your newest ' + res.data.unread_partial + ' unread letters.' }) : null,
-      cards.length ? h('div', { class: 'cards' }, cards) : h('p', { class: 'empty', text: 'Nobody in the fleet list yet.' }));
+      cards.length ? h('div', { class: 'cards' }, cards) : h('p', { class: 'empty', text: 'Nobody in the fleet list yet.' }),
+      links.length ? h('h3', { class: 'sub-h', text: 'More doors' }) : null,
+      links.length ? h('div', { class: 'cards' }, links) : null);
   }
 
   async function showInbox(seq, quiet) {

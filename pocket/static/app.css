@@ -56,6 +56,8 @@ main{flex:1;padding:.8rem .8rem 6rem;outline:none}
 .card{display:block;width:100%;text-align:left;padding:.85rem 1rem;border-radius:16px;
   background:var(--panel);border:1px solid var(--black);border-left:4px solid var(--bblack)}
 .card.wakes{border-left-color:var(--green)}
+.card.link{text-decoration:none;color:inherit;border-left-color:var(--yellow)}
+.sub-h{margin:1.2rem .1rem .3rem;font-size:.9rem;color:var(--muted);font-weight:600}
 .card .name{font-size:1.15rem;font-weight:700;color:var(--white)}
 .card .host{font-size:.8rem;color:var(--muted);margin-left:.4rem;font-weight:400}
 .card .heard{font-size:.9rem;color:var(--fg);margin-top:.2rem}

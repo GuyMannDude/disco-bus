@@ -1,5 +1,17 @@
 # Changelog
 
+## pocket v0.2.0 — "More doors": Pocket Mnemo card on the Fleet screen
+
+- Guy (10-31): "Why can't we have Mnemo Cortex and Omnemo on our phones?" He has
+  Mnemo already — Pocket Mnemo — but it lived on a different home-screen icon.
+  Now the Fleet screen ends with **More doors**: a card per entry in the doors
+  file's new top-level `links` list (label, text, url, needs), opening in a new
+  tab. Config-driven so the app code still carries no off-origin URL; bad rows
+  (non-http scheme, no url, not an object) are dropped, never raised.
+- `/api/fleet` gains `links: [...]` (empty list when the file has none).
+- The live doors file lists Pocket Mnemo (the Mnemo server's `/app`), "Needs
+  Tailscale ON on this phone, same as here." Opie #5850 GO.
+
 ## pocket v0.1.1 — the unreachable banner names Tailscale
 
 - **Problem:** with Tailscale off on the phone, the app came up from its offline

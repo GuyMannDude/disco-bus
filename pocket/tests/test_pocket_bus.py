@@ -1015,3 +1015,20 @@ def test_cli_and_service_share_one_lock(pocket):
     os.close(fd)
     t.join(5)
     assert done == [410]
+
+
+def test_fleet_links_come_from_the_doors_file_and_bad_rows_are_dropped(pocket):
+    """Pocket Mnemo card on the Fleet screen (Opie #5850): config-driven, so the
+    app code carries no off-origin URL; a bad row never kills the fleet list."""
+    doors = {"agents": DOORS, "links": [
+        {"label": "Pocket Mnemo", "text": "Your memory.", "url": "http://192.0.2.5:50001/app", "needs": "Needs Tailscale ON"},
+        {"label": "bad scheme", "url": "javascript:alert(1)"}, "junk", {"label": "no url"}]}
+    (pocket.config_dir / "doors.json").write_text(json.dumps(doors))
+    _, data, _ = pocket.api("GET", "fleet")
+    assert [c["agent"] for c in data["agents"]] == list(DOORS)
+    assert data["links"] == [{"label": "Pocket Mnemo", "text": "Your memory.", "url": "http://192.0.2.5:50001/app", "needs": "Needs Tailscale ON"}]
+
+
+def test_fleet_without_links_key_has_an_empty_list(pocket):
+    _, data, _ = pocket.api("GET", "fleet")
+    assert data["links"] == []
