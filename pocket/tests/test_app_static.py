@@ -42,3 +42,14 @@ def test_app_helpers_under_node():
     r = subprocess.run(["node", "--test", str(HERE / "app_helpers.test.cjs")],
                        capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_unreachable_banner_names_tailscale_and_offers_the_app():
+    """Guy 10-31: an icon and a zero told him nothing. Nothing answering on a phone
+    almost always means Tailscale is off — the banner must say so and hand over a
+    button, with no http(s) in the app (fallback goes through market://)."""
+    js = (STATIC / "app.js").read_text()
+    bad = js.split("el.textContent = 'Bus: not reachable';")[-1]
+    assert "Tailscale is OFF" in bad and "Open Tailscale" in bad
+    assert "intent://#Intent;package=com.tailscale.ipn;" in bad and "market%3A%2F%2F" in bad
+    assert ".banner a.fix" in (STATIC / "app.css").read_text()

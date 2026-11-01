@@ -146,8 +146,20 @@
       el.classList.add('bad'); el.textContent = 'Bus: not reachable';
       banner.hidden = false; banner.textContent = 'Pocket Bus is up, but it can’t reach the bus on ' + hostLabel + '.' + since + (detail ? ' (' + detail + ')' : '');
     } else {
+      // Nothing answered at all. On a phone that is almost always Tailscale being
+      // OFF (Guy, 10-31: "I didn't know I needed Tailscale opened to use Pocket
+      // Bus"). Say so in plain words and hand over the button; never just a zero.
       el.classList.add('bad'); el.textContent = 'Bus: not reachable';
-      banner.hidden = false; banner.textContent = 'Can’t reach the bus on ' + hostLabel + '.' + since;
+      banner.hidden = false;
+      banner.textContent = 'Can’t reach ' + hostLabel + '. On a phone that almost always means Tailscale is OFF. '
+        + 'Open Tailscale, switch it on, then come back here.' + since + ' ';
+      const fix = document.createElement('a');
+      fix.className = 'fix';
+      fix.textContent = 'Open Tailscale';
+      // intent: launches the Tailscale app when Android can resolve it; otherwise the
+      // Play Store page, which has its own Open button. No http(s) in the app, by rule.
+      fix.href = 'intent://#Intent;package=com.tailscale.ipn;S.browser_fallback_url=market%3A%2F%2Fdetails%3Fid%3Dcom.tailscale.ipn;end';
+      banner.appendChild(fix);
     }
   }
 

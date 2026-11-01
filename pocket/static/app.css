@@ -38,6 +38,7 @@ h1{margin:0;font-size:1.05rem;letter-spacing:.2em;text-transform:uppercase;color
 .lamp.bad{color:var(--red)} .lamp.bad::before{background:var(--red)}
 .banner{margin:.6rem .8rem 0;padding:.8rem 1rem;border-radius:12px;border:1px solid var(--red);background:#2a0716;color:#ffd5df;font-size:.95rem}
 .banner.warn{border-color:var(--yellow);background:#2a2207;color:#fff6c2}
+.banner a.fix{display:inline-block;margin-top:.6rem;padding:.7rem 1.1rem;min-height:48px;line-height:1.6;border-radius:10px;background:var(--red);color:#fff;font-weight:600;text-decoration:none}
 
 /* main */
 main{flex:1;padding:.8rem .8rem 6rem;outline:none}

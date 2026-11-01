@@ -1,5 +1,18 @@
 # Changelog
 
+## pocket v0.1.1 — the unreachable banner names Tailscale
+
+- **Problem:** with Tailscale off on the phone, the app came up from its offline
+  shell showing an icon and a zero. Guy (10-31): "I didn't know I needed
+  Tailscale opened to use Pocket Bus." The spec's "can't reach the bus" line was
+  there but said nothing about WHY or what to press.
+- **Fix (static only, no server change):** the status-0 banner now says, in
+  plain words, that on a phone this almost always means Tailscale is OFF, and
+  carries an **Open Tailscale** button (`intent://…package=com.tailscale.ipn`
+  with a `market://` fallback — no http(s) in the app, per its own test).
+  Shell cache bumped to v2 so phones pick it up on their next connected open.
+- Tests: `test_unreachable_banner_names_tailscale_and_offers_the_app`.
+
 ## v0.20.1 — a sender can read its own letter
 
 - **Problem:** `/mesh/read` was also the mark-read call and admitted only the

@@ -2,7 +2,7 @@
 // The page comes from cache when the bus host is unreachable, so it can say
 // so ("Can't reach the bus … last good contact …") instead of going blank.
 // /api/* is never cached: every letter comes from the bus, every time.
-const CACHE = 'pocket-bus-shell-v1';
+const CACHE = 'pocket-bus-shell-v2';
 const SHELL = ['/app/', '/app/app.js', '/app/app.css', '/app/manifest.webmanifest',
                '/app/icon.svg', '/app/icon-192.png', '/app/icon-512.png'];
 
