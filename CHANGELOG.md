@@ -12,6 +12,7 @@
   with a `market://` fallback — no http(s) in the app, per its own test).
   Shell cache bumped to v2 so phones pick it up on their next connected open.
 - Tests: `test_unreachable_banner_names_tailscale_and_offers_the_app`.
+- First-run screen and the ⚙ about line now say **Needs Tailscale ON on this phone** (Opie #5846).
 
 ## v0.20.1 — a sender can read its own letter
 

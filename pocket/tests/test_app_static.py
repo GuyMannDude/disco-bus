@@ -53,3 +53,8 @@ def test_unreachable_banner_names_tailscale_and_offers_the_app():
     assert "Tailscale is OFF" in bad and "Open Tailscale" in bad
     assert "intent://#Intent;package=com.tailscale.ipn;" in bad and "market%3A%2F%2F" in bad
     assert ".banner a.fix" in (STATIC / "app.css").read_text()
+
+
+def test_first_run_and_about_say_tailscale_must_be_on():
+    assert "Needs Tailscale ON on this phone" in (STATIC / "index.html").read_text()
+    assert "Needs Tailscale ON on this phone" in (STATIC / "app.js").read_text()

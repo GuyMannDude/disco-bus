@@ -176,7 +176,7 @@
     const badge = $('badge');
     badge.hidden = !(d.unread > 0);
     badge.textContent = d.unread > 99 ? '99+' : String(d.unread || '');
-    $('menu-about').textContent = 'Signed in as ' + me + ' · bus host ' + hostLabel + '.';
+    $('menu-about').textContent = 'Signed in as ' + me + ' · bus host ' + hostLabel + '. Needs Tailscale ON on this phone.';
   }
 
   async function loadFleet() {
