@@ -15,12 +15,15 @@
  *   DISCOBUS_DISPATCHER   dispatcher base URL (default http://127.0.0.1:9100)
  *   DISCOBUS_AGENTS_FILE  path to agents.json registry
  *                         (default ~/.disco-bus/agents.json)
+ *   DISCOBUS_INBOX        inbox root, same as the listener's
+ *                         (default ~/.disco-bus/inbox) — read for the
+ *                         listener's .replied.json sidecars (v0.21 absorb)
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -28,6 +31,37 @@ const AGENT_ID = process.env.DISCOBUS_AGENT || "unknown";
 const DISPATCHER = process.env.DISCOBUS_DISPATCHER || "http://127.0.0.1:9100";
 const AGENTS_FILE = process.env.DISCOBUS_AGENTS_FILE || join(homedir(), ".disco-bus", "agents.json");
 const MESH_VERSION = "0.5";
+const INBOX_DIR = join(process.env.DISCOBUS_INBOX || join(homedir(), ".disco-bus", "inbox"), AGENT_ID);
+// The stray second answer lands within the same wake turn: 82 s (10-22) and
+// 95 s (11-05) after the wake reply. Past this window a reply on the thread
+// is news (an ORDER-COMPLETE on a woken order) and must go through.
+const ABSORB_WINDOW_MS = 10 * 60 * 1000;
+
+// v0.21 (snag-rocky-double-ack-one-letter): the listener writes
+// <tracking_id>.replied.json once DISCOBUS_AUTO_REPLY has answered a letter
+// for this agent. A prompt telling the agent not to ping again failed twice,
+// so the tool itself declines. Any unreadable sidecar fails OPEN (send).
+function wakeReplyFor(letterId, to) {
+  let names;
+  try {
+    names = readdirSync(INBOX_DIR);
+  } catch {
+    return null;
+  }
+  const prefix = `msg-${letterId}-`;
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !name.endsWith(".replied.json")) continue;
+    try {
+      const s = JSON.parse(readFileSync(join(INBOX_DIR, name), "utf8"));
+      if (s.letter_id !== letterId || s.to !== to) continue;
+      const age = Date.now() - Date.parse(s.replied_at);
+      if (age >= 0 && age < ABSORB_WINDOW_MS) return s;
+    } catch {
+      // fail open
+    }
+  }
+  return null;
+}
 
 function loadKnownAgents() {
   try {
@@ -60,7 +94,8 @@ const server = new McpServer({
 server.tool(
   "ping",
   `Send a pushed message to another agent via the dispatcher. ` +
-    `Target agent's listener is woken immediately. Replies use reply_to.`,
+    `Target agent's listener is woken immediately. Replies use reply_to. ` +
+    `A reply to a letter your wake turn already answered is absorbed, not sent.`,
   {
     to: z
       .string()
@@ -95,6 +130,25 @@ server.tool(
           },
         ],
       };
+    }
+    if (reply_to !== undefined) {
+      const wake = wakeReplyFor(reply_to, to);
+      if (wake) {
+        const until = new Date(Date.parse(wake.replied_at) + ABSORB_WINDOW_MS).toISOString();
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `Absorbed, NOT sent: your wake reply #${wake.reply_id} already answered ` +
+                `#${reply_to} for you at ${wake.replied_at}. Sending this as well would give ` +
+                `${to} your answer twice. Nothing to do; ${to} has your answer. ` +
+                `Only if this is genuinely NEW news (not the same answer again), ` +
+                `reply on the thread after ${until} or send a fresh letter.`,
+            },
+          ],
+        };
+      }
     }
     let parsedBody;
     try {

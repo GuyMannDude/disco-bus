@@ -20,6 +20,10 @@ Configured via env:
                        posted back to the dispatcher with reply_to set.
                        Skipped if the incoming envelope already has reply_to
                        (avoids auto-reply loops).
+                       v0.21: once that reply is accepted (and is not an
+                       {"error": ...} body), the listener writes
+                       <inbox>/<agent>/<tracking_id>.replied.json; the agent's
+                       MCP `ping` absorbs a second reply to that letter.
   DISCOBUS_AUTO_REPLY_TIMEOUT  seconds (default 120)
   DISCOBUS_ON_DELIVER  optional. A shell command run once per inbound letter
                        (not for class:"status" furniture), envelope JSON on
@@ -49,6 +53,7 @@ import os
 import subprocess
 import threading
 import uuid
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -158,7 +163,25 @@ def run_on_deliver(envelope: dict) -> None:
         log.warning(f"on-deliver failed: {str(e)[:300]}")
 
 
-def post_reply(envelope: dict, reply_body: dict) -> None:
+def write_replied_sidecar(envelope: dict, reply_id: int) -> None:
+    """v0.21: leave `<tracking_id>.replied.json` beside the letter once the
+    auto-reply is on the bus. The agent's own MCP `ping` reads it and absorbs
+    a second answer to the same letter (snag-rocky-double-ack-one-letter:
+    Rocky's wake turn replied, then he called `ping` with the same reply_to)."""
+    inbox = INBOX_ROOT / AGENT
+    target = inbox / f"{envelope['tracking_id']}.replied.json"
+    tmp = inbox / f"{target.name}.tmp.{uuid.uuid4().hex[:8]}"
+    tmp.write_text(json.dumps({
+        "letter_id": envelope["id"],
+        "reply_id": reply_id,
+        "to": envelope["from"],
+        "replied_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }, indent=2))
+    tmp.rename(target)
+
+
+def post_reply(envelope: dict, reply_body: dict) -> int | None:
+    """Post the auto-reply; return its envelope id when the dispatcher took it."""
     payload = {
         "mesh_version": MESH_VERSION,
         "from": AGENT,
@@ -170,8 +193,11 @@ def post_reply(envelope: dict, reply_body: dict) -> None:
     try:
         r = requests.post(f"{DISPATCHER}/mesh/ping", json=payload, timeout=10)
         log.info(f"reply for #{envelope['id']} -> dispatcher {r.status_code} {r.text[:200]}")
-    except requests.RequestException as e:
+        if r.ok:
+            return r.json().get("id")
+    except (requests.RequestException, ValueError) as e:
         log.error(f"reply post failed: {e}")
+    return None
 
 
 def handle(envelope: dict) -> None:
@@ -194,7 +220,14 @@ def handle(envelope: dict) -> None:
     # Optional auto-reply: skip if envelope is itself a reply (avoid loops)
     if AUTO_REPLY_CMD and envelope.get("reply_to") is None:
         reply = run_auto_reply(envelope)
-        post_reply(envelope, reply)
+        reply_id = post_reply(envelope, reply)
+        # An error body (wake timeout, HUD down) is not an answer: no sidecar,
+        # so the agent's own later reply still goes through.
+        if reply_id is not None and not (isinstance(reply, dict) and "error" in reply):
+            try:
+                write_replied_sidecar(envelope, reply_id)
+            except Exception as e:
+                log.warning(f"replied sidecar for #{envelope['id']} not written: {e}")
 
 
 class InboxHandler(BaseHTTPRequestHandler):

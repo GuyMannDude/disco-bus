@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.21.0 — a letter the wake path answered is not answered twice
+
+- **Problem:** Rocky answered one letter twice — #6022 from the wake path
+  (`DISCOBUS_AUTO_REPLY` → `wake-rocky.py`), then #6024 ~95 s later from his own
+  `ping` with the same `reply_to` (and #5007/#5008 on 10-22). The wake prompt
+  already says "do NOT call the bus ping tool yourself"; a prompt-only guard
+  failed at the model twice (snag-rocky-double-ack-one-letter).
+- **Fix (listener):** once the auto-reply is accepted by the dispatcher and is
+  not an `{"error": ...}` body, the listener writes
+  `<inbox>/<agent>/<tracking_id>.replied.json` (`letter_id`, `reply_id`, `to`,
+  `replied_at`), atomically. No sidecar for an error body or a refused post.
+- **Fix (mcp `ping`):** a `reply_to` that matches a sidecar for the same letter
+  and the same recipient, within 10 minutes of the wake reply, is NOT sent; the
+  tool answers "Absorbed, NOT sent: your wake reply #<n> already answered #<id>
+  …". After the window a reply on the thread goes through (an ORDER-COMPLETE on
+  a woken order is news). Unreadable sidecars fail open. New env
+  `DISCOBUS_INBOX` (same default as the listener).
+- Takes effect on restart: the listener (sidecars) and the agent's MCP session
+  (absorb). Tests: `test_listener_replied_sidecar` (4), `test_mcp_absorb` (7).
+
 ## pocket v0.2.0 — "More doors": Pocket Mnemo card on the Fleet screen
 
 - Guy (10-31): "Why can't we have Mnemo Cortex and Omnemo on our phones?" He has
